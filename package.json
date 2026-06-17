@@ -1,7 +1,7 @@
 {
   "name": "kael",
   "version": "1.0.0",
-  "description": "KAEL — a personal, always-on AI voice command hub (JARVIS-style). Talk to it; it routes you to the right AI tools and speaks back. Claude API + Web Speech, no framework.",
+  "description": "KAEL — a personal, always-on AI voice command hub (JARVIS-style). Talk to it; it routes you to the right AI tools and speaks back. Runs on a free local model (Ollama) by default, with a one-click switch to Claude. Web Speech, no framework.",
   "type": "module",
   "main": "server.js",
   "scripts": {

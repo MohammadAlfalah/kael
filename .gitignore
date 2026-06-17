@@ -4,3 +4,6 @@ node_modules/
 !.env.example
 npm-debug.log*
 .DS_Store
+
+# KAEL's persistent long-term memory — personal conversation data, never commit.
+data/

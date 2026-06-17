@@ -1,21 +1,24 @@
 # KAEL — Personal AI Voice Command Hub
 
-KAEL is a sleek, single-user AI assistant you **talk to** — a JARVIS-style,
-always-on voice command hub. You speak; KAEL listens, thinks, and answers out
-loud, then keeps listening. It doesn't do the task for you, it **routes you
-correctly** through the AI ecosystem (Claude, GPT‑4, Gemini, Cursor, Lovable,
-Midjourney, Runway, ElevenLabs, Perplexity, and more) — telling you the exact
-tool or workflow to use, and why.
+KAEL is a sleek, single-user AI assistant you **talk to** — a JARVIS-style
+voice command hub. Hold your push-to-talk key, speak, and release; KAEL thinks
+and answers out loud. It's a normal conversational assistant first — it answers
+what you ask and remembers what matters, and only points you to a specific tool
+or app when you explicitly ask for one.
 
-It's intentionally minimal: a glowing voice orb, hands-free continuous
-listening, spoken replies, and optional live web search — nothing else. A text
-box is there as a fallback when you'd rather type.
+It's intentionally minimal: a glowing voice orb, push-to-talk input, spoken
+replies, and optional live web search — nothing else. A text box is there as a
+fallback when you'd rather type.
 
 ## Features
 
-- **Voice-first, hands-free** — talk to KAEL and it talks back. Continuous,
-  always-on listening (it re-arms after every reply), with a reactive orb that
-  shows when it's listening, thinking, or speaking.
+- **Push-to-talk** — hold a key (or mouse button) you choose, speak, and release
+  to send. No wake word, and the mic is only ever live while you hold it. A
+  reactive orb shows when it's listening, thinking, or speaking. Rebind the key
+  anytime in ⚙ Settings, or just press &amp; hold the orb.
+- **Natural voice** — KAEL prefers the highest-quality neural / "natural" voice
+  your browser offers (smoothest in Microsoft Edge) instead of the robotic system
+  default, and you can pick the exact voice in ⚙ Settings.
 - **Spoken, concise answers** — replies are tuned to be short and conversational
   (one to three sentences), since they're read aloud — no walls of text or URLs.
 - **Streaming + sentence-chunked speech** — KAEL starts speaking as soon as the
@@ -23,7 +26,10 @@ box is there as a fallback when you'd rather type.
 - **Optional web search** via the Brave Search API — triggered when you say
   "search …" or ask for current info. No Brave key? KAEL just answers from
   knowledge.
-- **Persistent conversation** within the session (in memory, no database).
+- **Persistent long-term memory** — KAEL remembers across restarts and reboots.
+  It keeps a rolling summary of older chats plus a profile of durable facts about
+  you, saved to disk (`data/`, gitignored). The summarizing is done by the free
+  local model, so nothing leaves your machine and it costs no API tokens.
 - **Single-user, no auth** — it's your personal hub.
 - **Text fallback** — a slim input is always there for quiet rooms or when voice
   isn't available.
@@ -35,8 +41,10 @@ box is there as a fallback when you'd rather type.
 ## Tech stack
 
 - **Frontend:** a single `public/index.html` — plain HTML + CSS + vanilla JS, no framework.
-- **Backend:** Node.js + Express (`server.js`) — proxies the Claude API and Brave search.
-- **AI:** the official `@anthropic-ai/sdk`, streaming via Server-Sent Events.
+- **Backend:** Node.js + Express (`server.js`) — streams from the chosen model and proxies Brave search.
+- **AI:** a **free local model via [Ollama](https://ollama.com)** by default (no key, no tokens,
+  private), with a one-click switch to **Claude** (`@anthropic-ai/sdk`). Both stream
+  token-by-token via Server-Sent Events, so the UI is identical either way.
 - **Voice:** the browser-native **Web Speech API** — `SpeechRecognition` for
   speech-to-text and `SpeechSynthesis` for KAEL's voice. No extra service or key.
 
@@ -44,36 +52,55 @@ box is there as a fallback when you'd rather type.
 
 ```
 kael/
-├── server.js          # Express server: Claude streaming + optional web search
+├── server.js          # Express server: local/Claude streaming + optional web search
 ├── package.json
 ├── public/
 │   └── index.html     # the entire UI (HTML + CSS + JS)
+├── data/              # persistent long-term memory (gitignored, created at runtime)
 └── .env.example       # required/optional keys
 ```
 
 ## Getting started
 
-### 1. Install dependencies
+### 1. Install Ollama and pull a model (the free brain)
+
+KAEL runs on a **free, local model** by default — no API key, no tokens, fully
+private. Install [Ollama](https://ollama.com), then pull a model:
+
+```bash
+ollama pull llama3.2
+```
+
+`llama3.2` (3B) is small, fast, and runs comfortably on a modest GPU/laptop.
+Want sharper answers and have the hardware? Pull a bigger one (`ollama pull
+qwen2.5` or `ollama pull llama3.1`) and set `OLLAMA_MODEL` in `.env`.
+
+Make sure Ollama is running (`ollama serve`, or just launch the Ollama app).
+
+### 2. Install dependencies
 
 ```bash
 npm install
 ```
 
-### 2. Add your API keys
+### 3. Configure (optional)
+
+KAEL works with **zero configuration** — skip this step to just run it. Create a
+`.env` only if you want to change the model, enable web search, or use Claude:
 
 ```bash
 cp .env.example .env
 ```
 
-Then edit `.env`:
-
 | Key | Required? | What it's for |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | **Yes** | Talking to Claude. Get one at <https://console.anthropic.com/>. |
+| `OLLAMA_MODEL` | No | Local model to use (default `llama3.2`). |
+| `OLLAMA_URL` | No | Where Ollama is listening (default `http://localhost:11434`). |
+| `ANTHROPIC_API_KEY` | No | Only to enable the **Claude** backend. Get one at <https://console.anthropic.com/>. |
 | `BRAVE_API_KEY` | No | Live web search. Free tier at <https://brave.com/search/api/>. Omit to disable search. |
 | `PORT` | No | Port to run on (default `3000`). |
 
-### 3. Run it
+### 4. Run it
 
 ```bash
 npm start
@@ -81,32 +108,40 @@ npm start
 
 Open **<http://localhost:3000>** in Chrome or Edge.
 
+## Switching backends (free local ⇄ Claude)
+
+KAEL starts on the **free local model**. The pill in the top-right of the header
+shows the active backend — **⚡ local** or **✦ claude** — and clicking it flips
+between them instantly. No restart, no code change; every following turn uses
+whichever is selected.
+
+- **⚡ local** — your machine answers. Free, private, offline, no tokens.
+- **✦ claude** — Anthropic's Claude answers. Sharper on hard questions, but uses
+  your API tokens. Only available when `ANTHROPIC_API_KEY` is set; otherwise the
+  switch is politely refused and KAEL stays local.
+
+You can also set the startup default with `KAEL_PROVIDER=ollama` (or `claude`) in `.env`.
+
 ## Talking to KAEL
 
-1. **Tap the orb** (or the 🎙️ button) once to wake KAEL and allow microphone access.
-   It then listens continuously, hands-free, indefinitely.
-2. **Say its name to address it.** KAEL only answers when you say **"kael" at the
-   start or end** of what you say — e.g. *"Kael, what's the best tool for a logo?"*
-   or *"…what's the best tool for a logo, Kael?"*. Anything without the wake word is
-   ignored, so it won't react to background chatter or you talking to someone else.
-   A short **earcon** confirms the moment it accepts your wake word, so you always
-   know whether it heard you. (Say just "Kael" on its own and it waits for your
-   command.) The recognizer also accepts close-sounding variants, since "KAEL" is an
-   uncommon name to transcribe.
-3. **Nothing leaves the browser unless you address it.** Un-addressed speech is
-   transcribed locally and discarded — only a command with the wake word is ever
-   sent to the AI.
-4. **Put it to sleep with your voice.** Say *"Kael, stop"* / *"go to sleep"* /
-   *"that's all"* / *"mute"* and it replies "Going quiet" and stops listening until
-   you tap the orb again.
-5. After it answers out loud, it automatically starts listening again.
-6. **🎙️ toggles** listening on/off. **⏹ stops** KAEL mid-sentence. **new chat**
-   clears the conversation.
-7. Prefer to type? Use the text box at the bottom anytime — typing never needs the
-   wake word, and KAEL still speaks its reply.
+1. **Hold your push-to-talk key and speak.** By default it's the **Space bar** —
+   hold it, talk, and release to send. The mic is only live while you hold, so KAEL
+   never listens to the room and there's no wake word to remember. The first time,
+   your browser asks for microphone access. A short **earcon** confirms the mic
+   opening and closing.
+2. **Don't like Space?** Open **⚙ Settings → Push-to-talk key**, click **Rebind**,
+   and press whatever you want — any keyboard key, or a mouse button (middle, right,
+   back, or forward). Press Esc to cancel. Your choice is saved across restarts.
+3. **No hands on the keyboard?** Press **and hold the orb** (or the 🎤 button) to
+   talk instead — release to send. Works with touch, too.
+4. **Barge in anytime.** Start holding to talk while KAEL is mid-reply and it stops
+   and listens to you immediately.
+5. **⏹ stops** KAEL mid-sentence without sending anything. **new chat** clears the
+   on-screen conversation (long-term memory is kept).
+6. Prefer to type? Use the text box at the bottom anytime — KAEL still speaks its reply.
 
-The orb tells you the state at a glance: gently breathing = idle, teal sonar pulses =
-listening, amber spin = thinking, fast bright pulse = speaking.
+The orb tells you the state at a glance: gently breathing = idle/ready, teal sonar
+pulses = listening (key held), amber spin = thinking, fast bright pulse = speaking.
 
 > Keep the server running (just leave `npm start` going) and KAEL stays available
 > all the time. To have it launch automatically when your machine boots, run it
@@ -127,8 +162,14 @@ KAEL's persona lives in the `KAEL_SYSTEM_PROMPT` constant at the top of
 
 ## Notes
 
-- Conversation history is kept **in memory** and resets when the server restarts
-  or when you click **"new chat"**. There is no database by design.
+- KAEL's memory is **persisted to disk** under `data/` (gitignored) so it survives
+  restarts and reboots: a profile of durable facts about you, a rolling summary of
+  older conversations, and the most recent turns verbatim. The full raw transcript
+  is also appended to `data/transcript.jsonl`. Only a bounded window plus the
+  summary is fed to the model, so the context never overflows no matter how long
+  the history grows. Clicking **"new chat"** starts a fresh conversation but KEEPS
+  long-term memory; a complete wipe is `POST /api/reset` with body `{"all":true}`.
+  Inspect what KAEL remembers anytime at `GET /api/memory`.
 - This is a single-user app with no authentication — run it locally or behind your
   own access control; don't expose it publicly with your API keys.
 

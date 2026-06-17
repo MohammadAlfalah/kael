@@ -41,6 +41,9 @@
       padding: 6px 12px; cursor: pointer; transition: all .15s;
     }
     .ghost-btn:hover { color: var(--text); border-color: #2a3744; }
+    .ghost-btn.claude { color: var(--amber); border-color: rgba(245,177,76,.45); }
+    .ghost-btn.claude:hover { color: var(--amber); border-color: var(--amber); }
+    .ghost-btn.icon-only { padding: 6px 9px; }
 
     /* ---- Stage (orb + status) ---- */
     main { flex: 1; display: flex; flex-direction: column; align-items: center; min-height: 0; }
@@ -49,7 +52,7 @@
       justify-content: center; padding: 26px 16px 10px; gap: 14px; width: 100%;
     }
 
-    .orb-wrap { position: relative; width: 200px; height: 200px; display: grid; place-items: center; cursor: pointer; }
+    .orb-wrap { position: relative; width: 200px; height: 200px; display: grid; place-items: center; cursor: pointer; touch-action: none; -webkit-user-select: none; user-select: none; }
     .orb {
       width: 120px; height: 120px; border-radius: 50%;
       background:
@@ -57,9 +60,10 @@
         radial-gradient(circle at 50% 50%, #0e2b28, #081317 70%);
       box-shadow: 0 0 36px rgba(94,234,212,.28), inset 0 0 30px rgba(94,234,212,.22);
       transition: transform .25s ease, box-shadow .3s ease, filter .3s ease;
+      pointer-events: none;
     }
     /* concentric rings */
-    .ring { position: absolute; border-radius: 50%; border: 1px solid rgba(94,234,212,.25); inset: 0; opacity: 0; }
+    .ring { position: absolute; border-radius: 50%; border: 1px solid rgba(94,234,212,.25); inset: 0; opacity: 0; pointer-events: none; }
 
     /* idle: gentle breathing */
     .stage[data-state="idle"] .orb { animation: breathe 4s ease-in-out infinite; filter: saturate(.7) brightness(.8); }
@@ -97,13 +101,9 @@
     .stage[data-state="speaking"] .ring.r2 { animation-delay: .35s; }
     @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
 
-    /* muted: grey, static */
-    .stage[data-state="muted"] .orb { filter: grayscale(1) brightness(.6); box-shadow: 0 0 18px rgba(130,140,155,.2); }
-
     .status { font-family: var(--mono); font-size: 13px; letter-spacing: 2px; color: var(--accent); text-transform: lowercase; min-height: 18px; }
     .stage[data-state="thinking"] .status { color: var(--amber); }
-    .stage[data-state="idle"] .status,
-    .stage[data-state="muted"] .status { color: var(--muted); }
+    .stage[data-state="idle"] .status { color: var(--muted); }
     .interim { font-family: var(--sans); font-size: 14px; color: var(--muted); font-style: italic; min-height: 20px; max-width: 600px; text-align: center; }
 
     .unsupported { color: var(--amber); font-family: var(--mono); font-size: 12px; max-width: 520px; text-align: center; line-height: 1.6; }
@@ -131,6 +131,7 @@
       flex: 0 0 auto; width: 44px; height: 44px; border-radius: 12px;
       border: 1px solid var(--border); background: var(--panel); color: var(--text);
       cursor: pointer; display: grid; place-items: center; transition: all .15s; font-size: 18px;
+      -webkit-user-select: none; user-select: none; touch-action: none;
     }
     .icon-btn:hover { border-color: #2a3744; }
     .icon-btn.active { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 12px rgba(94,234,212,.25); }
@@ -149,6 +150,38 @@
     }
     .send:disabled { opacity: .4; cursor: not-allowed; }
 
+    /* ---- Settings overlay ---- */
+    .settings-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,.6); backdrop-filter: blur(2px);
+      display: none; align-items: center; justify-content: center; z-index: 10; padding: 16px;
+    }
+    .settings-overlay.open { display: flex; }
+    .settings {
+      width: min(460px, 96vw); background: var(--panel); border: 1px solid var(--border);
+      border-radius: 16px; padding: 22px; display: flex; flex-direction: column; gap: 20px;
+      box-shadow: 0 24px 60px rgba(0,0,0,.55);
+    }
+    .settings h2 { margin: 0; font-family: var(--mono); font-size: 14px; letter-spacing: 3px; color: var(--accent); }
+    .setting-row { display: flex; flex-direction: column; gap: 9px; }
+    .setting-row .label { font-family: var(--mono); font-size: 11px; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; }
+    .row { display: flex; gap: 10px; align-items: center; }
+    .binding-chip {
+      font-family: var(--mono); font-size: 13px; color: var(--text); background: #0c1116;
+      border: 1px solid var(--border); border-radius: 8px; padding: 7px 14px; min-width: 96px; text-align: center;
+    }
+    .settings select {
+      flex: 1; min-width: 0; background: #0c1116; color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 9px; font-family: var(--sans); font-size: 13px;
+    }
+    .mini-btn {
+      font-family: var(--mono); font-size: 12px; color: var(--text); background: transparent;
+      border: 1px solid var(--border); border-radius: 8px; padding: 8px 13px; cursor: pointer; transition: all .15s; white-space: nowrap;
+    }
+    .mini-btn:hover { border-color: #2a3744; }
+    .mini-btn.capturing { color: var(--amber); border-color: var(--amber); }
+    .icon-btn.talk.active { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 12px rgba(94,234,212,.25); }
+    .hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
     @media (max-width: 520px) {
       .brand small { display: none; }
       .orb-wrap { width: 160px; height: 160px; }
@@ -161,16 +194,18 @@
     <span class="hdot" id="hdot" title="status"></span>
     <div class="brand"><h1><span class="k">K</span>AEL</h1><small>voice command hub</small></div>
     <span class="spacer"></span>
+    <button class="ghost-btn" id="brainBtn" title="AI backend">⚡ local</button>
+    <button class="ghost-btn icon-only" id="settingsBtn" title="Settings (voice &amp; push-to-talk key)">⚙</button>
     <button class="ghost-btn" id="newChat">new chat</button>
   </header>
 
   <main>
     <div class="stage" id="stage" data-state="idle">
-      <div class="orb-wrap" id="orbWrap" role="button" aria-label="Activate KAEL">
+      <div class="orb-wrap" id="orbWrap" role="button" aria-label="Press and hold to talk to KAEL">
         <span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span>
         <div class="orb"></div>
       </div>
-      <div class="status" id="status">tap to wake</div>
+      <div class="status" id="status">hold to talk</div>
       <div class="interim" id="interim"></div>
       <div class="unsupported" id="unsupported" style="display:none;"></div>
     </div>
@@ -180,7 +215,7 @@
 
   <footer>
     <div class="controls">
-      <button class="icon-btn" id="micBtn" title="Listen / mute">🎙️</button>
+      <button class="icon-btn talk" id="talkBtn" title="Hold to talk">🎤</button>
       <button class="icon-btn stop" id="stopBtn" title="Stop speaking" disabled>⏹</button>
       <div class="textbar">
         <textarea id="input" rows="1" placeholder="…or type to KAEL"></textarea>
@@ -188,6 +223,35 @@
       </div>
     </div>
   </footer>
+
+  <!-- ---- Settings: voice + push-to-talk key ---- -->
+  <div class="settings-overlay" id="settingsOverlay">
+    <div class="settings">
+      <h2>SETTINGS</h2>
+
+      <div class="setting-row">
+        <span class="label">Push-to-talk key</span>
+        <div class="row">
+          <span class="binding-chip" id="bindingLabel">Space</span>
+          <button class="mini-btn" id="rebindBtn">Rebind</button>
+        </div>
+        <span class="hint">Hold this key — or a mouse button — anywhere on the page to talk; release to send. You can also press &amp; hold the orb. Click <b>Rebind</b>, then press the key or mouse button you want (Esc cancels).</span>
+      </div>
+
+      <div class="setting-row">
+        <span class="label">Voice</span>
+        <div class="row">
+          <select id="voiceSelect"></select>
+          <button class="mini-btn" id="testVoiceBtn">Test</button>
+        </div>
+        <span class="hint">★ marks higher-quality <b>natural / neural</b> voices. For the smoothest, most Airy-like options, open KAEL in <b>Microsoft Edge</b> — it exposes the full set of natural voices.</span>
+      </div>
+
+      <div class="row" style="justify-content:flex-end;">
+        <button class="mini-btn" id="settingsClose">Done</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     // ---- elements ----
@@ -197,12 +261,20 @@
     const unsupportedEl = document.getElementById('unsupported');
     const orbWrap = document.getElementById('orbWrap');
     const log = document.getElementById('log');
-    const micBtn = document.getElementById('micBtn');
+    const talkBtn = document.getElementById('talkBtn');
     const stopBtn = document.getElementById('stopBtn');
     const input = document.getElementById('input');
     const sendBtn = document.getElementById('send');
     const hdot = document.getElementById('hdot');
     const newChatBtn = document.getElementById('newChat');
+    const brainBtn = document.getElementById('brainBtn');
+    const settingsBtn = document.getElementById('settingsBtn');
+    const settingsOverlay = document.getElementById('settingsOverlay');
+    const settingsClose = document.getElementById('settingsClose');
+    const bindingLabelEl = document.getElementById('bindingLabel');
+    const rebindBtn = document.getElementById('rebindBtn');
+    const voiceSelect = document.getElementById('voiceSelect');
+    const testVoiceBtn = document.getElementById('testVoiceBtn');
 
     // ---- feature detection ----
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -210,61 +282,44 @@
     const canListen = Boolean(SR);
     const canSpeak = Boolean(TTS);
 
+    // ---- tuning ----
+    const SPEAK_RATE = 0.97;   // a hair slower than default → calmer, smoother delivery
+    const SPEAK_PITCH = 1.0;
+    const VOICE_KEY = 'kael.voice';   // localStorage: chosen voiceURI
+    const PTT_STORE = 'kael.ptt';     // localStorage: push-to-talk binding
+
     // ---- state ----
-    let state = 'idle';            // idle | listening | thinking | speaking | muted
-    let active = false;            // is the always-on loop engaged?
+    let state = 'idle';            // idle (ready) | listening | thinking | speaking
     let recognizing = false;       // is recognition currently running?
     let recognition = null;
-    let pendingFinal = '';         // captured final transcript for the current turn
     let abortController = null;    // aborts the in-flight chat fetch
+
+    // push-to-talk runtime state
+    let pttHeld = false;           // is the bound key/button physically held right now?
+    let pttActive = false;         // is a recognition capture in progress for this hold?
+    let pttTranscript = '';        // finalized words captured during this hold
+    let capturing = false;         // are we in "press a key to rebind" mode?
 
     function setState(s) {
       state = s;
       stage.dataset.state = s;
       hdot.classList.toggle('live', s === 'listening' || s === 'speaking' || s === 'thinking');
-      micBtn.classList.toggle('active', active && s !== 'idle' && s !== 'muted');
+      talkBtn.classList.toggle('active', s === 'listening');
       stopBtn.disabled = s !== 'speaking';
-      const labels = { idle: 'tap to wake', listening: 'listening — say "kael"', thinking: 'thinking…', speaking: 'speaking…', muted: 'muted' };
+      const labels = { idle: holdHint(), listening: 'listening…', thinking: 'thinking…', speaking: 'speaking…' };
       statusEl.textContent = labels[s] || '';
       if (s !== 'listening') interimEl.textContent = '';
     }
-
-    // ---- wake word ----
-    // KAEL only takes a VOICE turn when you say "kael" at the start or end of the
-    // sentence. The recognizer often mishears the coined name, so accept close
-    // phonetic variants too. (Typing in the text box never needs the wake word.)
-    const WAKE_WORDS = new Set(['kael', 'kale', 'cale', 'cael', 'kel', 'kail', 'kayle', 'kayel', 'kaela', 'kaehl', 'khal', 'kahl']);
-    const normWord = (w) => w.toLowerCase().replace(/[^a-z]/g, '');
-    // Returns: null = no wake word (ignore); '' = wake word only (await command);
-    // otherwise the command with the wake word stripped off.
-    function extractCommand(text) {
-      const words = text.trim().split(/\s+/).filter(Boolean);
-      if (!words.length) return null;
-      if (WAKE_WORDS.has(normWord(words[0]))) {
-        return words.slice(1).join(' ').replace(/^[\s,.:;!?-]+/, '').trim();
-      }
-      if (words.length > 1 && WAKE_WORDS.has(normWord(words[words.length - 1]))) {
-        return words.slice(0, -1).join(' ').replace(/[\s,.:;!?-]+$/, '').trim();
-      }
-      return null;
+    function holdHint() {
+      return canListen ? 'hold ' + pttBinding.label + ' to talk' : 'type to talk to KAEL';
     }
 
-    // ---- dismiss / sleep phrases ----
-    // Said WITH the wake word ("kael, stop"), these put KAEL to sleep (it stops
-    // listening) until you tap the orb again — explicit "be quiet now" control.
-    const DISMISS = new Set(['stop', 'sleep', 'mute', 'quiet', 'dismiss', 'enough', 'silence']);
-    const DISMISS_PHRASES = new Set([
-      'go to sleep', 'stop listening', 'go quiet', 'be quiet', 'thats all',
-      'that will be all', 'never mind', 'stand down', 'power down', 'shut down',
-    ]);
-    function isDismiss(cmd) {
-      const c = cmd.toLowerCase().replace(/[^a-z\s]/g, '').replace(/\s+/g, ' ').trim();
-      return DISMISS.has(c) || DISMISS_PHRASES.has(c);
-    }
-
-    // ---- subtle earcons (confirm intent was registered) ----
+    // ---- subtle earcons (confirm the mic opened / closed) ----
     let audioCtx = null;
-    function initAudio() { if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch {} } }
+    function initAudio() {
+      if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch {} }
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+    }
     function earcon(kind) {
       if (!audioCtx) return;
       const t = audioCtx.currentTime;
@@ -272,7 +327,7 @@
       const g = audioCtx.createGain();
       o.connect(g); g.connect(audioCtx.destination);
       o.type = 'sine';
-      const up = kind === 'wake';
+      const up = kind === 'open';
       o.frequency.setValueAtTime(up ? 520 : 460, t);
       o.frequency.exponentialRampToValueAtTime(up ? 760 : 240, t + (up ? 0.12 : 0.18));
       g.gain.setValueAtTime(0.0001, t);
@@ -281,30 +336,72 @@
       o.start(t); o.stop(t + (up ? 0.18 : 0.24));
     }
 
-    // Briefly show that something was heard but NOT addressed to KAEL.
-    let ignoredTimer = null;
-    function flashIgnored() {
-      interimEl.textContent = '· not addressed — say "kael" ·';
-      clearTimeout(ignoredTimer);
-      ignoredTimer = setTimeout(() => { if (state === 'listening') interimEl.textContent = ''; }, 1500);
+    // ====================================================================
+    //  PUSH-TO-TALK
+    //  Hold the bound key/mouse button (or the orb) → mic opens.
+    //  Release → recognition stops, the captured text is sent. No wake word,
+    //  no always-on listening: the mic is only live while you hold.
+    // ====================================================================
+
+    function defaultBinding() { return { type: 'key', code: 'Space', label: 'Space' }; }
+    let pttBinding = (function load() {
+      try { const b = JSON.parse(localStorage.getItem(PTT_STORE)); if (b && b.type) return b; } catch {}
+      return defaultBinding();
+    })();
+
+    function saveBinding(b) {
+      pttBinding = b;
+      try { localStorage.setItem(PTT_STORE, JSON.stringify(b)); } catch {}
+      updateBindingUI();
+      if (state === 'idle') setState('idle');   // refresh the "hold X to talk" hint
+    }
+    function updateBindingUI() {
+      bindingLabelEl.textContent = pttBinding.label;
+      if (!capturing) rebindBtn.textContent = 'Rebind';
     }
 
-    // "Kael, stop" → say a quick "Going quiet." and stop listening until re-woken.
-    function dismiss() {
-      earcon('sleep');
-      active = false;
-      stopRecognition();
-      if (canSpeak) {
-        TTS.cancel();
-        const u = new SpeechSynthesisUtterance('Going quiet.');
-        if (voice) u.voice = voice;
-        u.rate = 1.05;
-        u.onend = u.onerror = () => setState('muted');
-        setState('speaking');
-        TTS.speak(u);
-      } else {
-        setState('muted');
+    function pttDown() {
+      if (pttHeld || capturing) return;
+      initAudio();
+      if (!canListen) {
+        unsupportedEl.style.display = 'block';
+        unsupportedEl.textContent = 'Voice input needs Chrome or Edge. You can still type to KAEL — it will speak its replies.';
+        return;
       }
+      pttHeld = true;
+      // barge-in: if KAEL is mid-reply, you holding the key interrupts it.
+      if (canSpeak) TTS.cancel();
+      if (abortController) { try { abortController.abort(); } catch {} }
+      startPtt();
+    }
+    function pttUp() {
+      if (!pttHeld) return;
+      pttHeld = false;
+      endPtt();
+    }
+
+    function startPtt() {
+      if (!canListen || pttActive) return;
+      pttTranscript = '';
+      pttActive = true;
+      setState('listening');
+      interimEl.textContent = 'listening…';
+      earcon('open');
+      try { recognition.start(); }
+      catch { /* start() throws if it's still finishing the previous run; onend will re-arm */ }
+    }
+    function endPtt() {
+      if (!pttActive) { setState('idle'); return; }
+      earcon('close');
+      if (!recognizing) {
+        // released before the engine actually started (a too-quick tap) → just reset.
+        pttActive = false;
+        setState('idle');
+        try { recognition.abort(); } catch {}
+        return;
+      }
+      try { recognition.stop(); }       // graceful stop → onend finalizes & sends
+      catch { pttActive = false; setState('idle'); }
     }
 
     // ---- speech recognition (speech → text) ----
@@ -312,7 +409,7 @@
       recognition = new SR();
       recognition.lang = 'en-US';
       recognition.interimResults = true;
-      recognition.continuous = false; // one utterance per turn; we loop manually
+      recognition.continuous = true;    // keep capturing for the whole hold, pauses included
 
       recognition.onstart = () => { recognizing = true; };
 
@@ -320,77 +417,178 @@
         let interim = '';
         for (let i = e.resultIndex; i < e.results.length; i++) {
           const t = e.results[i][0].transcript;
-          if (e.results[i].isFinal) pendingFinal += t;
+          if (e.results[i].isFinal) pttTranscript += t + ' ';
           else interim += t;
         }
-        if (interim) interimEl.textContent = interim;
+        interimEl.textContent = (pttTranscript + interim).trim() || 'listening…';
       };
 
       recognition.onerror = (e) => {
         if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-          active = false;
+          pttHeld = false; pttActive = false;
           setState('idle');
           statusEl.textContent = 'mic blocked';
-          interimEl.textContent = 'Allow microphone access to talk to KAEL, then tap the orb.';
+          interimEl.textContent = 'Allow microphone access, then hold your push-to-talk key.';
         }
-        // 'no-speech' / 'aborted' / 'network' fall through to onend, which re-arms.
+        // 'no-speech' / 'aborted' / 'network' fall through to onend.
       };
 
       recognition.onend = () => {
         recognizing = false;
-        const text = pendingFinal.trim();
-        pendingFinal = '';
-        if (state === 'listening' && text.length > 1) {
-          const cmd = extractCommand(text);
-          if (cmd === null) {
-            // Heard speech, but not addressed to KAEL → ignore, nothing is sent.
-            flashIgnored();
-            if (active) startListening();
-          } else if (cmd === '') {
-            // Just the wake word on its own → acknowledge and wait for the command.
-            earcon('wake');
-            interimEl.textContent = 'go ahead…';
-            if (active) startListening();
-          } else if (isDismiss(cmd)) {
-            // "kael, stop / sleep / that's all" → go quiet until re-woken.
-            dismiss();
-          } else {
-            // Addressed with a real command → confirm and respond.
-            earcon('wake');
-            handleUtterance(cmd);
-          }
-        } else if (active && state === 'listening') {
-          startListening();                 // silence / noise → keep listening
+        if (pttActive && pttHeld) {
+          // engine auto-stopped (e.g. brief silence) but the key is still down → keep going.
+          try { recognition.start(); } catch {}
+          return;
         }
+        if (!pttActive) return;          // already handled / cancelled
+        pttActive = false;
+        const text = pttTranscript.trim();
+        pttTranscript = '';
+        if (text.length > 0) handleUtterance(text);
+        else { setState('idle'); interimEl.textContent = ''; }
       };
     }
 
-    function startListening() {
-      if (!canListen || !active || recognizing) return;
-      setState('listening');
-      try { recognition.start(); }
-      catch { /* start() throws if already running; ignore */ }
+    // ---- rebinding the push-to-talk key ----
+    const MOUSE_LABELS = { 0: 'Left Mouse', 1: 'Middle Mouse', 2: 'Right Mouse', 3: 'Mouse Back', 4: 'Mouse Fwd' };
+    function keyLabel(e) {
+      if (e.code === 'Space') return 'Space';
+      if (e.key === 'Control') return e.code === 'ControlRight' ? 'Right Ctrl' : 'Left Ctrl';
+      if (e.key === 'Shift')   return e.code === 'ShiftRight'   ? 'Right Shift' : 'Left Shift';
+      if (e.key === 'Alt')     return e.code === 'AltRight'     ? 'Right Alt'   : 'Left Alt';
+      if (e.key === 'Meta')    return 'Meta';
+      if (e.key && e.key.length === 1) return e.key.toUpperCase();
+      return e.code || e.key || 'Key';
     }
-
-    function stopRecognition() {
-      if (recognition && recognizing) { try { recognition.abort(); } catch {} }
-      recognizing = false;
+    function startCapture() {
+      capturing = true;
+      rebindBtn.textContent = 'press any key or button…';
+      rebindBtn.classList.add('capturing');
     }
+    function endCapture() {
+      capturing = false;
+      rebindBtn.classList.remove('capturing');
+      updateBindingUI();
+    }
+    function captureKey(e) {
+      e.preventDefault(); e.stopPropagation();
+      if (e.code === 'Escape') { endCapture(); return; }
+      saveBinding({ type: 'key', code: e.code, label: keyLabel(e) });
+      endCapture();
+    }
+    function captureMouse(e) {
+      e.preventDefault(); e.stopPropagation();
+      if (e.button === 0) {
+        // left-click is reserved for operating the UI — nudge them to another button.
+        rebindBtn.textContent = 'not left-click — pick another';
+        return;                          // stay in capture mode
+      }
+      saveBinding({ type: 'mouse', button: e.button, label: MOUSE_LABELS[e.button] || ('Mouse ' + e.button) });
+      endCapture();
+    }
+    rebindBtn.addEventListener('click', (e) => { e.stopPropagation(); if (capturing) endCapture(); else startCapture(); });
 
-    // ---- text to speech (KAEL speaks) ----
+    // ---- global hold handlers (capture phase so we see the press first) ----
+    const isTyping = (t) => t && (t === input || t.tagName === 'TEXTAREA' || t.tagName === 'INPUT');
+
+    window.addEventListener('keydown', (e) => {
+      if (capturing) { captureKey(e); return; }
+      if (e.repeat) return;
+      if (isTyping(e.target)) return;     // never hijack typing in the text box
+      if (pttBinding.type === 'key' && e.code === pttBinding.code) { e.preventDefault(); pttDown(); }
+    }, true);
+    window.addEventListener('keyup', (e) => {
+      if (capturing) return;
+      if (pttBinding.type === 'key' && e.code === pttBinding.code) { e.preventDefault(); pttUp(); }
+    }, true);
+    window.addEventListener('mousedown', (e) => {
+      if (capturing) { captureMouse(e); return; }
+      if (pttBinding.type === 'mouse' && e.button === pttBinding.button) { e.preventDefault(); pttDown(); }
+    }, true);
+    window.addEventListener('mouseup', (e) => {
+      if (capturing) return;
+      if (pttBinding.type === 'mouse' && e.button === pttBinding.button) { e.preventDefault(); pttUp(); }
+    }, true);
+    // keep bound mouse buttons from triggering nav / context menu / autoscroll
+    window.addEventListener('auxclick', (e) => {
+      if (pttBinding.type === 'mouse' && e.button === pttBinding.button) e.preventDefault();
+    }, true);
+    window.addEventListener('contextmenu', (e) => {
+      if (capturing || (pttBinding.type === 'mouse' && pttBinding.button === 2)) e.preventDefault();
+    }, true);
+
+    // ---- on-screen hold targets: the orb + the mic button ----
+    function bindHold(el) {
+      el.addEventListener('pointerdown', (e) => {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;   // only primary press here
+        e.preventDefault();
+        try { el.setPointerCapture(e.pointerId); } catch {}
+        pttDown();
+      });
+      el.addEventListener('pointerup', (e) => { e.preventDefault(); pttUp(); });
+      el.addEventListener('pointercancel', () => pttUp());
+    }
+    bindHold(orbWrap);
+    bindHold(talkBtn);
+
+    // ====================================================================
+    //  TEXT TO SPEECH — KAEL speaks
+    //  Prefer high-quality NEURAL / "natural" voices. On Edge (and partly
+    //  Chrome) these are the Azure neural voices ("…Online (Natural)") — far
+    //  smoother than the legacy SAPI voices. We bias toward calm, soft voices.
+    // ====================================================================
     let voice = null;
+    function rankVoice(v) {
+      const n = (v.name || '').toLowerCase();
+      let s = 0;
+      if (/natural|neural|online/.test(n)) s += 100;                       // neural engine
+      if (/aria|ava|emma|jenny|libby|sonia|michelle|clara|natasha|nova|cora/.test(n)) s += 40; // calm, smooth voices ≈ Airy
+      if (/google/.test(n)) s += 18;                                       // Google network voices: decent
+      if (/^en-us/i.test(v.lang)) s += 8;
+      else if (/^en-gb/i.test(v.lang)) s += 6;
+      else if (/^en/i.test(v.lang)) s += 4;
+      if (/david|zira|mark|hazel|george|susan/.test(n)) s -= 20;          // legacy robotic SAPI voices
+      if (v.localService === false) s += 6;                               // remote = usually the better engines
+      return s;
+    }
     function pickVoice() {
       if (!canSpeak) return;
       const voices = TTS.getVoices();
       if (!voices.length) return;
-      voice =
-        voices.find(v => /en-GB/i.test(v.lang) && /male|daniel|arthur|george/i.test(v.name)) ||
-        voices.find(v => /en/i.test(v.lang) && /male|david|google us english/i.test(v.name)) ||
-        voices.find(v => /en-GB/i.test(v.lang)) ||
-        voices.find(v => /^en/i.test(v.lang)) ||
-        voices[0];
+      const saved = localStorage.getItem(VOICE_KEY);
+      if (saved) { const v = voices.find((x) => x.voiceURI === saved); if (v) { voice = v; return; } }
+      voice = voices.slice().sort((a, b) => rankVoice(b) - rankVoice(a))[0] || voices[0];
     }
-    if (canSpeak) { pickVoice(); TTS.onvoiceschanged = pickVoice; }
+    function populateVoiceSelect() {
+      if (!canSpeak) return;
+      const voices = TTS.getVoices().filter((v) => /^en/i.test(v.lang)).sort((a, b) => rankVoice(b) - rankVoice(a));
+      voiceSelect.innerHTML = '';
+      for (const v of voices) {
+        const opt = document.createElement('option');
+        opt.value = v.voiceURI;
+        const natural = /natural|neural|online/i.test(v.name);
+        opt.textContent = (natural ? '★ ' : '   ') + v.name + '  (' + v.lang + ')';
+        voiceSelect.appendChild(opt);
+      }
+      if (voice) voiceSelect.value = voice.voiceURI;
+    }
+    if (canSpeak) {
+      pickVoice();
+      TTS.onvoiceschanged = () => { pickVoice(); populateVoiceSelect(); };
+    }
+    voiceSelect.addEventListener('change', () => {
+      const v = TTS.getVoices().find((x) => x.voiceURI === voiceSelect.value);
+      if (v) { voice = v; try { localStorage.setItem(VOICE_KEY, v.voiceURI); } catch {} }
+    });
+    testVoiceBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!canSpeak) return;
+      TTS.cancel();
+      const u = new SpeechSynthesisUtterance("Hi, I'm Kael. This is how I sound now — smoother, I hope.");
+      if (voice) u.voice = voice;
+      u.rate = SPEAK_RATE; u.pitch = SPEAK_PITCH;
+      TTS.speak(u);
+    });
 
     let ttsBuffer = '';
     let utterancesPending = 0;
@@ -400,8 +598,8 @@
       if (!canSpeak || !text) return;
       const u = new SpeechSynthesisUtterance(text);
       u.lang = 'en-US';
-      u.rate = 1.05;
-      u.pitch = 1.0;
+      u.rate = SPEAK_RATE;
+      u.pitch = SPEAK_PITCH;
       if (voice) u.voice = voice;
       utterancesPending++;
       setState('speaking');
@@ -421,12 +619,10 @@
     }
 
     function maybeFinishSpeaking() {
-      if (streamDone && utterancesPending <= 0) backToListening();
+      if (streamDone && utterancesPending <= 0 && !pttActive) backToReady();
     }
-
-    function backToListening() {
-      if (active) { setState('listening'); startListening(); }
-      else setState(canListen ? 'muted' : 'idle');
+    function backToReady() {
+      if (!pttActive) setState('idle');   // don't stomp on a fresh barge-in hold
     }
 
     // ---- conversation log ----
@@ -444,7 +640,7 @@
     // ---- the turn: send to KAEL, stream reply, speak it ----
     async function handleUtterance(message) {
       interimEl.textContent = '';
-      stopRecognition();
+      if (recognizing) { try { recognition.abort(); } catch {} recognizing = false; }
       setState('thinking');
       addMessage('user', 'YOU', message);
 
@@ -503,7 +699,7 @@
           }
         }
 
-        // stream finished — speak any trailing partial sentence, then resume listening.
+        // stream finished — speak any trailing partial sentence, then go ready.
         streamDone = true;
         drainTts(true);
         if (!bubble.textContent) bubble.textContent = '(no response)';
@@ -511,55 +707,87 @@
       } catch (err) {
         streamDone = true;
         if (err.name === 'AbortError') {
-          // user interrupted; just go back to listening
-          backToListening();
+          backToReady();
           return;
         }
         bubble.parentNode.classList.add('error');
         const note = '⚠ ' + err.message;
         bubble.textContent = bubble.textContent ? bubble.textContent + '\n\n' + note : note;
-        backToListening();
+        backToReady();
       } finally {
         abortController = null;
       }
     }
 
     // ---- controls ----
-    function activate() {
-      initAudio(); // unlock earcons (needs the tap gesture)
-      if (!canListen) { // no STT: at least allow speaking + typing
-        unsupportedEl.style.display = 'block';
-        unsupportedEl.textContent = 'Voice input needs Chrome or Edge. You can still type to KAEL — and KAEL will speak its replies.';
-        return;
-      }
-      active = true;
-      startListening();
-    }
-    function mute() {
-      active = false;
-      stopRecognition();
-      if (canSpeak) TTS.cancel();
-      setState(canListen ? 'muted' : 'idle');
-    }
-
-    micBtn.addEventListener('click', () => { (active ? mute() : activate()); });
-    orbWrap.addEventListener('click', () => { if (!active && state !== 'thinking' && state !== 'speaking') activate(); });
-
     stopBtn.addEventListener('click', () => {
       if (canSpeak) TTS.cancel();
-      if (abortController) abortController.abort();
-      backToListening();
+      if (abortController) { try { abortController.abort(); } catch {} }
+      setState('idle');
     });
 
     newChatBtn.addEventListener('click', async () => {
-      if (abortController) abortController.abort();
+      if (abortController) { try { abortController.abort(); } catch {} }
       if (canSpeak) TTS.cancel();
       await fetch('/api/reset', { method: 'POST' }).catch(() => {});
       log.innerHTML = '';
-      backToListening();
+      setState('idle');
     });
 
-    // text fallback
+    // ---- settings panel ----
+    settingsBtn.addEventListener('click', () => {
+      const open = settingsOverlay.classList.toggle('open');
+      if (open) { populateVoiceSelect(); updateBindingUI(); }
+      else if (capturing) endCapture();
+    });
+    settingsClose.addEventListener('click', () => { if (capturing) endCapture(); settingsOverlay.classList.remove('open'); });
+    settingsOverlay.addEventListener('click', (e) => {
+      if (e.target === settingsOverlay) { if (capturing) endCapture(); settingsOverlay.classList.remove('open'); }
+    });
+
+    // ---- backend switch (free local model ⇄ Claude) ----
+    let currentProvider = 'ollama';
+    function setProviderLabel(p) {
+      currentProvider = p;
+      const claude = p === 'claude';
+      brainBtn.textContent = claude ? '✦ claude' : '⚡ local';
+      brainBtn.title = claude
+        ? 'Backend: Claude (uses your API tokens). Click for the free local model.'
+        : 'Backend: free local model via Ollama. Click to switch to Claude.';
+      brainBtn.classList.toggle('claude', claude);
+    }
+    let brainNoteTimer = null;
+    function flashBrainNote(text) {
+      interimEl.textContent = '· ' + text + ' ·';
+      clearTimeout(brainNoteTimer);
+      brainNoteTimer = setTimeout(() => {
+        if (state === 'idle') interimEl.textContent = '';
+      }, 2600);
+    }
+    brainBtn.addEventListener('click', async () => {
+      if (state === 'thinking' || state === 'speaking') {
+        flashBrainNote('finish this reply before switching');
+        return;
+      }
+      const next = currentProvider === 'claude' ? 'ollama' : 'claude';
+      try {
+        const r = await fetch('/api/provider', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: next }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) { flashBrainNote(data.error || 'could not switch backend'); return; }
+        setProviderLabel(data.provider);
+        flashBrainNote(data.provider === 'claude' ? 'switched to Claude' : 'switched to the free local model');
+      } catch { flashBrainNote('could not reach the server'); }
+    });
+    fetch('/api/provider')
+      .then((r) => r.json())
+      .then((d) => { if (d && d.provider) setProviderLabel(d.provider); })
+      .catch(() => {});
+
+    // ---- text fallback ----
     input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 120) + 'px'; });
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitText(); } });
     sendBtn.addEventListener('click', submitText);
@@ -570,9 +798,15 @@
       handleUtterance(text);
     }
 
+    // ---- boot ----
+    updateBindingUI();
+    setState('idle');
     if (!canSpeak && !canListen) {
       unsupportedEl.style.display = 'block';
       unsupportedEl.textContent = 'Your browser does not support voice. Use Chrome or Edge for the full JARVIS experience — typing still works.';
+    } else if (!canListen) {
+      unsupportedEl.style.display = 'block';
+      unsupportedEl.textContent = 'Voice input needs Chrome or Edge. You can still type to KAEL — it will speak its replies.';
     }
   </script>
 </body>
