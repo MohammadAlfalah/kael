@@ -1,0 +1,18 @@
+{
+  "name": "kael",
+  "version": "1.0.0",
+  "description": "KAEL — a personal, always-on AI voice command hub (JARVIS-style). Talk to it; it routes you to the right AI tools and speaks back. Claude API + Web Speech, no framework.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.69.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0"
+  }
+}
