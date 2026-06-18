@@ -1021,6 +1021,7 @@
       ttsBuffer = ''; utterancesPending = 0; streamDone = false;
       premiumWarnedThisTurn = false;
       stopSpeaking();
+      if (abortController) { try { abortController.abort(); } catch {} }   // interrupt any previous turn
       abortController = new AbortController();
 
       try {

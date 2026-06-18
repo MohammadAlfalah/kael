@@ -258,9 +258,13 @@ async function maybeSummarize() {
   }
 }
 
-// One turn streams at a time. Guards against a second tab / double-submit
-// interleaving and corrupting the shared history.
-let busy = false;
+// At most one turn streams at a time, but a NEW turn INTERRUPTS the current one
+// rather than being refused — you can always barge in / change your mind. We track
+// the in-flight turn's AbortController and a promise that resolves when it has
+// fully cleaned up, so the newest request always wins and a wedged turn can never
+// permanently block new ones.
+let activeController = null;        // AbortController of the in-flight turn (or null)
+let activeDone = Promise.resolve(); // resolves once the in-flight turn releases
 
 const app = express();
 app.use(express.json());
@@ -282,24 +286,39 @@ function extractQuery(message) {
 
 // Query the Brave Search API. Returns an array of {title, description, url},
 // or null when no API key is configured (search is then silently skipped).
-async function braveSearch(query) {
+// Bounded by a timeout and the turn's abort signal so it can NEVER hang the turn
+// (an unbounded search was a way the old single-turn lock could wedge forever).
+async function braveSearch(query, signal) {
   if (!process.env.BRAVE_API_KEY) return null;
 
   const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5`;
-  const res = await fetch(url, {
-    headers: {
-      Accept: 'application/json',
-      'X-Subscription-Token': process.env.BRAVE_API_KEY,
-    },
-  });
-  if (!res.ok) throw new Error(`Brave Search returned ${res.status}`);
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 6000);
+  const onAbort = () => ac.abort();
+  if (signal) {
+    if (signal.aborted) ac.abort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  }
+  try {
+    const res = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+        'X-Subscription-Token': process.env.BRAVE_API_KEY,
+      },
+      signal: ac.signal,
+    });
+    if (!res.ok) throw new Error(`Brave Search returned ${res.status}`);
 
-  const data = await res.json();
-  return (data.web?.results ?? []).slice(0, 5).map((r) => ({
-    title: r.title,
-    description: r.description,
-    url: r.url,
-  }));
+    const data = await res.json();
+    return (data.web?.results ?? []).slice(0, 5).map((r) => ({
+      title: r.title,
+      description: r.description,
+      url: r.url,
+    }));
+  } finally {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onAbort);
+  }
 }
 
 // Collapse newlines/control chars and cap length — search snippets are
@@ -429,10 +448,14 @@ app.post('/api/chat', async (req, res) => {
   if (!message) {
     return res.status(400).json({ error: 'Message is required.' });
   }
-  if (busy) {
-    return res.status(409).json({ error: 'KAEL is still responding — wait for the current reply.' });
+
+  // INTERRUPT any in-flight turn — the newest request wins. Abort it and wait
+  // (bounded) for it to release, so the old turn's memory commit settles and a
+  // wedged turn can never permanently block this one.
+  if (activeController) {
+    activeController.abort();
+    await Promise.race([activeDone, new Promise((r) => setTimeout(r, 2500))]);
   }
-  busy = true;
 
   // Server-Sent Events stream to the browser.
   res.setHeader('Content-Type', 'text/event-stream');
@@ -440,14 +463,19 @@ app.post('/api/chat', async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
 
-  const send = (payload) => res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  // Writing to an already-closed connection throws; swallow it so an interrupted
+  // turn tears down cleanly instead of crashing the handler.
+  const send = (payload) => { try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch {} };
 
-  // Abort the upstream model request only if the BROWSER disconnects before we
-  // finish. Listen on `res`, not `req`: a POST's request stream emits 'close' as
-  // soon as its body is read (right after express.json()), which would abort
-  // every turn immediately. The `finished` flag keeps normal completion — which
-  // also fires res 'close' — from looking like a disconnect.
+  // Abort the upstream model request if the BROWSER disconnects, or if a newer
+  // turn interrupts this one. Listen on `res`, not `req`: a POST's request stream
+  // emits 'close' as soon as its body is read (right after express.json()), which
+  // would abort every turn immediately. The `finished` flag keeps normal
+  // completion — which also fires res 'close' — from looking like a disconnect.
   const controller = new AbortController();
+  activeController = controller;
+  let release;
+  activeDone = new Promise((r) => { release = r; });
   let finished = false;
   const onClose = () => { if (!finished) controller.abort(); };
   res.on('close', onClose);
@@ -460,7 +488,7 @@ app.post('/api/chat', async (req, res) => {
     const query = extractQuery(message);
     try {
       send({ type: 'status', text: `Searching the web for "${query}"…` });
-      const results = await braveSearch(query);
+      const results = await braveSearch(query, controller.signal);
       if (results === null) {
         send({ type: 'status', text: 'Web search is not configured — answering from knowledge.' });
       } else if (results.length > 0) {
@@ -487,6 +515,9 @@ app.post('/api/chat', async (req, res) => {
       ? await streamFromClaude(messages, send, controller.signal, systemPrompt)
       : await streamFromOllama(messages, send, controller.signal, systemPrompt);
 
+    // If a newer turn interrupted us, don't commit this (partial) reply.
+    if (controller.signal.aborted) throw new Error('interrupted');
+
     // Commit atomically only on success — store the ORIGINAL user message (not
     // the search-augmented one) in the recent window, append to the permanent
     // transcript, and persist to disk so it survives the next restart.
@@ -509,8 +540,9 @@ app.post('/api/chat', async (req, res) => {
   } finally {
     finished = true;            // set before res.end() so its 'close' isn't seen as a disconnect
     res.off('close', onClose);
-    busy = false;
-    res.end();
+    if (activeController === controller) activeController = null;  // only if still ours
+    try { res.end(); } catch {}
+    release();                  // let any waiting newer turn proceed
   }
 });
 
@@ -533,9 +565,8 @@ app.post('/api/provider', (req, res) => {
   if (next === 'claude' && !process.env.ANTHROPIC_API_KEY) {
     return res.status(400).json({ error: 'Claude needs ANTHROPIC_API_KEY in your .env file.' });
   }
-  if (busy) {
-    return res.status(409).json({ error: 'Wait for the current reply before switching backends.' });
-  }
+  // Switching mid-reply is fine: the in-flight turn already picked its backend,
+  // so only the NEXT turn uses the new one.
   provider = next;
   res.json({ provider });
 });
