@@ -28,8 +28,33 @@ const MAX_TOKENS = 4096;
 // (e.g. OLLAMA_MODEL=qwen2.5 or llama3.1) — your GPU/RAM is the only limit.
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2';
+// Keep the model resident in memory between turns so replies aren't slowed by a
+// cold reload. Ollama's default is 5 min; we hold it longer. Each request resets
+// the timer, so during a conversation it stays warm. Set "-1" to keep it loaded
+// forever (fastest, always-on), or e.g. "10m" to free memory sooner when idle.
+// Ollama wants an INTEGER (seconds; -1 = forever) or a duration STRING ("30m").
+// Coerce a numeric value to a real number so "-1" actually pins the model — sent
+// as the string "-1" Ollama can't parse it and silently falls back to a default.
+const OLLAMA_KEEP_ALIVE_RAW = (process.env.OLLAMA_KEEP_ALIVE || '30m').trim();
+const OLLAMA_KEEP_ALIVE = /^-?\d+$/.test(OLLAMA_KEEP_ALIVE_RAW)
+  ? Number(OLLAMA_KEEP_ALIVE_RAW)
+  : OLLAMA_KEEP_ALIVE_RAW;
 // Hosted Claude (the optional, paid fallback).
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
+
+// ---- Premium voice (OpenAI TTS) — optional ----------------------------------
+// By default KAEL speaks with the browser's built-in voice (free, no key). If
+// OPENAI_API_KEY is set, the UI can switch to OpenAI's much smoother neural TTS.
+// Audio is proxied through this server so the key NEVER reaches the browser.
+// Cost is tiny at single-user volume (tts-1-hd ≈ $30 / 1M characters).
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const OPENAI_TTS_MODEL = process.env.OPENAI_TTS_MODEL || 'tts-1-hd';
+const TTS_VOICES = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
+// "shimmer" is the softest/calmest of the set — closest to a smooth, airy voice.
+const OPENAI_TTS_VOICE = TTS_VOICES.includes(process.env.OPENAI_TTS_VOICE || '')
+  ? process.env.OPENAI_TTS_VOICE
+  : 'shimmer';
+const TTS_MAX_CHARS = 1500;   // one spoken sentence; a guard on the proxy
 
 // The active backend. Starts on the free local model; flipped via /api/provider.
 const PROVIDERS = new Set(['ollama', 'claude']);
@@ -43,6 +68,10 @@ let provider =
 const DATA_DIR = path.join(__dirname, 'data');
 const MEMORY_FILE = path.join(DATA_DIR, 'memory.json');
 const TRANSCRIPT_FILE = path.join(DATA_DIR, 'transcript.jsonl');
+const LISTEN_FILE = path.join(DATA_DIR, 'listening.jsonl');  // "listening mode" capture log
+// KAEL always knows the current German time (Varyn's timezone). Injected into the
+// system prompt every turn so it's aware without being asked.
+const TIME_ZONE = process.env.KAEL_TIMEZONE || 'Europe/Berlin';
 const RECENT_WINDOW = 16;      // verbatim recent messages always kept in context
 const SUMMARIZE_TRIGGER = 24;  // once recent passes this, fold the oldest into the summary
 const MAX_PROFILE_FACTS = 30;  // cap on durable facts remembered about the user
@@ -129,10 +158,33 @@ function appendTranscript(role, content) {
     console.error('Failed to append transcript:', err.message));
 }
 
-// Compose a turn's system prompt: persona + durable profile + older-conversation
-// summary. The recent window is sent separately as real message turns.
+// The current date + time in Varyn's timezone (Germany), human-readable. Computed
+// fresh each turn so KAEL's sense of "now" is always current. Returns null if the
+// runtime can't resolve the timezone (then we just omit it).
+function germanNow() {
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: TIME_ZONE,
+      weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short',
+    }).format(new Date());
+  } catch {
+    return null;
+  }
+}
+
+// Compose a turn's system prompt: persona + current German time + durable profile
+// + older-conversation summary. The recent window is sent separately as real turns.
 function buildSystemPrompt() {
   let sys = KAEL_SYSTEM_PROMPT;
+  const now = germanNow();
+  if (now) {
+    sys +=
+      `\n\nThe current date and time in Germany is ${now} (${TIME_ZONE}). ` +
+      `You always know the current German time and date — factor it in when it's ` +
+      `relevant (greetings, "today", "tonight", scheduling, how long ago something was), ` +
+      `but don't state the time unless Varyn asks or it actually matters.`;
+  }
   if (memory.profile.length) {
     sys +=
       `\n\nWhat you durably know about Varyn (your long-term memory — treat as true; ` +
@@ -170,6 +222,7 @@ async function foldIntoMemory(olderMessages) {
       model: OLLAMA_MODEL,
       format: 'json',
       stream: false,
+      keep_alive: OLLAMA_KEEP_ALIVE,
       options: { temperature: 0.2, num_ctx: OLLAMA_CTX },
       messages: [{ role: 'user', content: instruction }],
     }),
@@ -291,6 +344,7 @@ async function streamFromOllama(messages, send, signal, system) {
       // Ollama takes the system prompt as a leading system-role message.
       messages: [{ role: 'system', content: system }, ...messages],
       stream: true,
+      keep_alive: OLLAMA_KEEP_ALIVE,   // keep the model warm → faster next reply
       // Roomier context so the long-term summary + recent window both fit.
       options: { num_ctx: OLLAMA_CTX },
     }),
@@ -497,6 +551,20 @@ app.post('/api/reset', async (req, res) => {
   res.json({ ok: true, clearedLongTerm: wipeAll });
 });
 
+// "Listening mode" capture — KAEL records what it hears WITHOUT replying. The
+// browser handles the silence (it never calls /api/chat in this mode); here we
+// just append each captured line to a separate, permanent log under data/. This
+// log is deliberately kept OUT of the model's memory/transcript so passive
+// recording never pollutes the conversation context.
+app.post('/api/listen', async (req, res) => {
+  const text = (req.body?.text ?? '').toString().trim();
+  if (!text) return res.status(400).json({ error: 'Text is required.' });
+  const line = JSON.stringify({ at: new Date().toISOString(), text }) + '\n';
+  await appendFile(LISTEN_FILE, line, 'utf8').catch((err) =>
+    console.error('Failed to append listening log:', err.message));
+  res.json({ ok: true });
+});
+
 // Peek at what KAEL durably remembers (transparency / debugging).
 app.get('/api/memory', (_req, res) => {
   res.json({
@@ -528,6 +596,94 @@ app.get('/api/health', async (_req, res) => {
   });
 });
 
+// ---- Premium voice (OpenAI TTS) ---------------------------------------------
+
+// Tell the UI whether premium voice is available (a key is set) and what the
+// options are, so it can show the toggle + voice picker only when it'll work.
+app.get('/api/voice', (_req, res) => {
+  res.json({
+    premiumAvailable: Boolean(OPENAI_API_KEY),
+    model: OPENAI_TTS_MODEL,
+    defaultVoice: OPENAI_TTS_VOICE,
+    voices: TTS_VOICES,
+  });
+});
+
+// Synthesize one sentence with OpenAI and stream the audio back to the browser.
+// The API key stays here — the browser only ever sees the resulting audio bytes.
+app.post('/api/tts', async (req, res) => {
+  if (!OPENAI_API_KEY) {
+    return res.status(503).json({ error: 'Premium voice is not configured (no OPENAI_API_KEY).' });
+  }
+  const text = (req.body?.text ?? '').toString().trim();
+  if (!text) return res.status(400).json({ error: 'Text is required.' });
+  if (text.length > TTS_MAX_CHARS) {
+    return res.status(400).json({ error: `Text too long (max ${TTS_MAX_CHARS} chars).` });
+  }
+  const voice = TTS_VOICES.includes((req.body?.voice ?? '').toString())
+    ? req.body.voice
+    : OPENAI_TTS_VOICE;
+
+  // Tear down the upstream request if the browser disconnects (barge-in/stop).
+  const controller = new AbortController();
+  res.on('close', () => controller.abort());
+
+  try {
+    const upstream = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: OPENAI_TTS_MODEL,
+        voice,
+        input: text,
+        response_format: 'mp3',
+      }),
+      signal: controller.signal,
+    });
+
+    if (!upstream.ok) {
+      const detail = (await upstream.text().catch(() => '')).slice(0, 300);
+      console.error(`OpenAI TTS returned ${upstream.status}: ${detail}`);
+      // 401 = bad/missing key, 429 = rate/quota. Surface a short hint.
+      const msg = upstream.status === 401
+        ? 'Premium voice rejected the OpenAI key.'
+        : upstream.status === 429
+          ? 'Premium voice hit a rate/quota limit.'
+          : 'Premium voice failed.';
+      return res.status(502).json({ error: msg });
+    }
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(Buffer.from(await upstream.arrayBuffer()));
+  } catch (err) {
+    if (!controller.signal.aborted && !res.headersSent) {
+      console.error('TTS proxy error:', err.message);
+      res.status(502).json({ error: 'Premium voice failed.' });
+    } else {
+      res.end();
+    }
+  }
+});
+
+// Preload the local model so the FIRST reply isn't slowed by a cold model load.
+// Best-effort and non-blocking: if Ollama isn't up yet, it fails quietly and the
+// first real turn loads the model instead. An empty prompt just loads + pins it.
+async function warmUpModel() {
+  if (provider !== 'ollama') return;
+  try {
+    await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: OLLAMA_MODEL, prompt: '', keep_alive: OLLAMA_KEEP_ALIVE }),
+    });
+    console.log(`  warmed up "${OLLAMA_MODEL}" (kept alive ${OLLAMA_KEEP_ALIVE}).`);
+  } catch { /* Ollama not ready — the first turn will load the model */ }
+}
+
 // Bring up persistent memory before accepting traffic, then start the server.
 await mkdir(DATA_DIR, { recursive: true }).catch(() => {});
 await loadMemory();
@@ -539,4 +695,8 @@ app.listen(PORT, () => {
   if (provider === 'ollama') {
     console.log(`  using the free local model. Make sure Ollama is running: ollama serve`);
   }
+  console.log(`  premium voice: ${OPENAI_API_KEY
+    ? `ON (OpenAI ${OPENAI_TTS_MODEL}, default voice "${OPENAI_TTS_VOICE}")`
+    : 'off (free browser voice — set OPENAI_API_KEY to enable)'}.`);
+  warmUpModel();   // fire-and-forget: load the model now so the first reply is fast
 });

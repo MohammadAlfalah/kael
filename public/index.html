@@ -4,6 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KAEL</title>
+  <!-- Inline orb favicon (avoids a /favicon.ico 404 in the console). -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='%2300d0c0'/%3E%3C/svg%3E" />
+  <!-- PWA: installable app with its own window + icon. -->
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="theme-color" content="#07090c" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="KAEL" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
   <style>
     :root {
       --bg: #07090c;
@@ -230,6 +240,17 @@
       <h2>SETTINGS</h2>
 
       <div class="setting-row">
+        <span class="label">Input mode</span>
+        <div class="row">
+          <select id="micModeSelect">
+            <option value="ptt">Push-to-talk (hold a key)</option>
+            <option value="open">Open mic (hands-free)</option>
+          </select>
+        </div>
+        <span class="hint"><b>Push-to-talk</b>: hold a key/button, speak, release. <b>Open mic</b>: KAEL listens continuously and sends automatically when you pause — tap the orb to pause/resume, or to interrupt KAEL mid-reply. Open mic needs a quiet-ish room (it goes deaf while KAEL is speaking to avoid hearing itself).</span>
+      </div>
+
+      <div class="setting-row" id="pttKeyRow">
         <span class="label">Push-to-talk key</span>
         <div class="row">
           <span class="binding-chip" id="bindingLabel">Space</span>
@@ -245,6 +266,18 @@
           <button class="mini-btn" id="testVoiceBtn">Test</button>
         </div>
         <span class="hint">★ marks higher-quality <b>natural / neural</b> voices. For the smoothest, most Airy-like options, open KAEL in <b>Microsoft Edge</b> — it exposes the full set of natural voices.</span>
+      </div>
+
+      <div class="setting-row" id="premiumRow" style="display:none;">
+        <span class="label">Premium voice</span>
+        <div class="row">
+          <label style="display:flex;align-items:center;gap:.45rem;cursor:pointer;">
+            <input type="checkbox" id="premiumToggle"> Use OpenAI neural voice
+          </label>
+          <select id="premiumVoiceSelect"></select>
+          <button class="mini-btn" id="testPremiumBtn">Test</button>
+        </div>
+        <span class="hint">Far smoother and more natural than any browser voice (OpenAI <b>tts-1-hd</b>). Uses your OpenAI key — about a dollar a month at normal use. Leave off to keep the free browser voice above. <b>shimmer</b> is the softest, most airy option.</span>
       </div>
 
       <div class="row" style="justify-content:flex-end;">
@@ -273,8 +306,14 @@
     const settingsClose = document.getElementById('settingsClose');
     const bindingLabelEl = document.getElementById('bindingLabel');
     const rebindBtn = document.getElementById('rebindBtn');
+    const micModeSelect = document.getElementById('micModeSelect');
+    const pttKeyRow = document.getElementById('pttKeyRow');
     const voiceSelect = document.getElementById('voiceSelect');
     const testVoiceBtn = document.getElementById('testVoiceBtn');
+    const premiumRow = document.getElementById('premiumRow');
+    const premiumToggle = document.getElementById('premiumToggle');
+    const premiumVoiceSelect = document.getElementById('premiumVoiceSelect');
+    const testPremiumBtn = document.getElementById('testPremiumBtn');
 
     // ---- feature detection ----
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -287,6 +326,10 @@
     const SPEAK_PITCH = 1.0;
     const VOICE_KEY = 'kael.voice';   // localStorage: chosen voiceURI
     const PTT_STORE = 'kael.ptt';     // localStorage: push-to-talk binding
+    const TTS_MODE_KEY = 'kael.ttsmode';   // localStorage: 'browser' | 'premium'
+    const PVOICE_KEY = 'kael.pvoice';      // localStorage: chosen OpenAI voice
+    const MIC_MODE_KEY = 'kael.micmode';   // localStorage: 'ptt' | 'open'
+    const OPEN_ENDPOINT_MS = 700;          // open-mic: silence after speech → send the utterance (lower = snappier)
 
     // ---- state ----
     let state = 'idle';            // idle (ready) | listening | thinking | speaking
@@ -300,6 +343,16 @@
     let pttTranscript = '';        // finalized words captured during this hold
     let capturing = false;         // are we in "press a key to rebind" mode?
 
+    // input mode + open-mic (hands-free) runtime state
+    let micMode = localStorage.getItem(MIC_MODE_KEY) || 'ptt';   // 'ptt' | 'open'
+    let openMicActive = false;     // is open-mic recognition intended to be running?
+    let openMicPaused = false;     // did the user mute open-mic (tap the orb)?
+    let openBuffer = '';           // finalized words captured this open-mic utterance
+    let openSilenceTimer = null;   // endpointing timer: fires after a pause to send
+
+    // listening mode: record everything heard, reply to nothing
+    let captureMode = 'normal';    // 'normal' | 'listening'
+
     function setState(s) {
       state = s;
       stage.dataset.state = s;
@@ -311,7 +364,9 @@
       if (s !== 'listening') interimEl.textContent = '';
     }
     function holdHint() {
-      return canListen ? 'hold ' + pttBinding.label + ' to talk' : 'type to talk to KAEL';
+      if (!canListen) return 'type to talk to KAEL';
+      if (micMode === 'open') return openMicPaused ? 'mic paused — tap the orb to resume' : 'open mic on — just talk';
+      return 'hold ' + pttBinding.label + ' to talk';
     }
 
     // ---- subtle earcons (confirm the mic opened / closed) ----
@@ -361,7 +416,7 @@
     }
 
     function pttDown() {
-      if (pttHeld || capturing) return;
+      if (micMode === 'open' || pttHeld || capturing) return;
       initAudio();
       if (!canListen) {
         unsupportedEl.style.display = 'block';
@@ -370,7 +425,7 @@
       }
       pttHeld = true;
       // barge-in: if KAEL is mid-reply, you holding the key interrupts it.
-      if (canSpeak) TTS.cancel();
+      stopSpeaking();
       if (abortController) { try { abortController.abort(); } catch {} }
       startPtt();
     }
@@ -404,6 +459,50 @@
       catch { pttActive = false; setState('idle'); }
     }
 
+    // ====================================================================
+    //  OPEN MIC (hands-free)
+    //  The mic stays on, transcribes continuously, and AUTO-SENDS a turn once
+    //  you go quiet for OPEN_ENDPOINT_MS (endpointing). It goes deaf while KAEL
+    //  is thinking/speaking — otherwise it would hear KAEL's own voice through
+    //  the speakers and reply to itself — then re-arms when KAEL is idle again.
+    // ====================================================================
+    function armOpenMic() {
+      if (!canListen || micMode !== 'open' || openMicPaused) return;
+      if (state === 'thinking' || state === 'speaking' || pttActive) return;
+      openBuffer = '';
+      openMicActive = true;
+      setState('listening');
+      interimEl.textContent = 'listening… just talk';
+      try { recognition.start(); }
+      catch { /* already running / finishing previous run → onend re-arms */ }
+    }
+    function stopOpenMic() {
+      openMicActive = false;
+      clearTimeout(openSilenceTimer);
+      try { recognition.abort(); } catch {}
+    }
+    // Tap on the orb / 🎤 button while in open-mic mode:
+    //   speaking/thinking → barge in (stop KAEL, start listening)
+    //   listening         → pause (mute)
+    //   paused            → resume
+    function openMicTap() {
+      if (state === 'speaking' || state === 'thinking') {
+        stopSpeaking();
+        if (abortController) { try { abortController.abort(); } catch {} }
+        openMicPaused = false;
+        armOpenMic();
+        return;
+      }
+      openMicPaused = !openMicPaused;
+      if (openMicPaused) {
+        stopOpenMic();
+        setState('idle');
+        interimEl.textContent = 'mic paused — tap the orb to resume';
+      } else {
+        armOpenMic();
+      }
+    }
+
     // ---- speech recognition (speech → text) ----
     if (canListen) {
       recognition = new SR();
@@ -414,27 +513,57 @@
       recognition.onstart = () => { recognizing = true; };
 
       recognition.onresult = (e) => {
-        let interim = '';
+        let interim = '', finals = '';
         for (let i = e.resultIndex; i < e.results.length; i++) {
           const t = e.results[i][0].transcript;
-          if (e.results[i].isFinal) pttTranscript += t + ' ';
+          if (e.results[i].isFinal) finals += t + ' ';
           else interim += t;
         }
+        if (openMicActive) {
+          // hands-free: accumulate, and (re)start the "you've gone quiet" timer.
+          openBuffer += finals;
+          interimEl.textContent = (openBuffer + interim).trim() || 'listening… just talk';
+          clearTimeout(openSilenceTimer);
+          if (openBuffer.trim()) {
+            openSilenceTimer = setTimeout(() => {
+              const text = openBuffer.trim();
+              openBuffer = '';
+              openMicActive = false;
+              try { recognition.abort(); } catch {}
+              if (text) handleUtterance(text);
+            }, OPEN_ENDPOINT_MS);
+          }
+          return;
+        }
+        // push-to-talk: just keep building the transcript for this hold.
+        pttTranscript += finals;
         interimEl.textContent = (pttTranscript + interim).trim() || 'listening…';
       };
 
       recognition.onerror = (e) => {
         if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
           pttHeld = false; pttActive = false;
+          openMicActive = false; openMicPaused = true;   // can't run open-mic without permission
+          clearTimeout(openSilenceTimer);
           setState('idle');
           statusEl.textContent = 'mic blocked';
-          interimEl.textContent = 'Allow microphone access, then hold your push-to-talk key.';
+          interimEl.textContent = 'Allow microphone access, then reload to use voice.';
         }
         // 'no-speech' / 'aborted' / 'network' fall through to onend.
       };
 
       recognition.onend = () => {
         recognizing = false;
+        // open-mic: the engine naturally stops after a silence/timeout — keep it
+        // alive by restarting (small delay avoids a hot loop on repeated errors).
+        if (openMicActive) {
+          if (micMode === 'open' && !openMicPaused && state === 'listening') {
+            setTimeout(() => { if (openMicActive) { try { recognition.start(); } catch {} } }, 250);
+            return;
+          }
+          openMicActive = false;
+          return;
+        }
         if (pttActive && pttHeld) {
           // engine auto-stopped (e.g. brief silence) but the key is still down → keep going.
           try { recognition.start(); } catch {}
@@ -522,11 +651,12 @@
       el.addEventListener('pointerdown', (e) => {
         if (e.pointerType === 'mouse' && e.button !== 0) return;   // only primary press here
         e.preventDefault();
+        if (micMode === 'open') { initAudio(); openMicTap(); return; }   // tap = pause/resume/barge-in
         try { el.setPointerCapture(e.pointerId); } catch {}
         pttDown();
       });
-      el.addEventListener('pointerup', (e) => { e.preventDefault(); pttUp(); });
-      el.addEventListener('pointercancel', () => pttUp());
+      el.addEventListener('pointerup', (e) => { if (micMode === 'open') return; e.preventDefault(); pttUp(); });
+      el.addEventListener('pointercancel', () => { if (micMode === 'open') return; pttUp(); });
     }
     bindHold(orbWrap);
     bindHold(talkBtn);
@@ -590,12 +720,167 @@
       TTS.speak(u);
     });
 
+    // Fetch JSON, retrying on network failure / non-2xx. The KAEL server is
+    // restarted by its keep-alive loop (and on reboot), so a one-time startup
+    // request can hit a brief window where the server is down. Retrying lets the
+    // UI heal itself instead of staying half-broken until a manual reload.
+    async function fetchJSONRetry(url, { tries = 8, delay = 1500 } = {}) {
+      for (let i = 0; i < tries; i++) {
+        try {
+          const r = await fetch(url);
+          if (r.ok) return await r.json();
+        } catch { /* server momentarily unreachable — fall through and retry */ }
+        await new Promise((res) => setTimeout(res, delay));
+      }
+      return null;
+    }
+
+    // ---- premium voice: detect availability, then show its controls ----
+    (async () => {
+      const d = await fetchJSONRetry('/api/voice');
+      if (!d) { ttsMode = 'browser'; return; }                    // gave up after retries
+      premiumAvailable = Boolean(d.premiumAvailable);
+      if (!premiumAvailable) { ttsMode = 'browser'; return; }     // no key → free voice only
+      const voices = Array.isArray(d.voices) ? d.voices : [];
+      if (!premiumVoice) premiumVoice = d.defaultVoice || 'shimmer';
+      premiumVoiceSelect.innerHTML = '';
+      for (const name of voices) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name + (name === d.defaultVoice ? ' (default)' : '');
+        premiumVoiceSelect.appendChild(opt);
+      }
+      if (voices.includes(premiumVoice)) premiumVoiceSelect.value = premiumVoice;
+      premiumToggle.checked = (ttsMode === 'premium');
+      premiumRow.style.display = '';
+    })();
+
+    premiumToggle.addEventListener('change', () => {
+      ttsMode = premiumToggle.checked ? 'premium' : 'browser';
+      try { localStorage.setItem(TTS_MODE_KEY, ttsMode); } catch {}
+      stopSpeaking();   // don't let the old engine keep talking after a switch
+    });
+    premiumVoiceSelect.addEventListener('change', () => {
+      premiumVoice = premiumVoiceSelect.value;
+      try { localStorage.setItem(PVOICE_KEY, premiumVoice); } catch {}
+    });
+    // Independent preview — bypasses the turn state machine so it never sticks
+    // KAEL in "speaking" with no reply in flight.
+    testPremiumBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      stopSpeaking();
+      try {
+        const r = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(premiumVoice
+            ? { text: "Hi, I'm Kael. This is my premium voice — smooth enough?", voice: premiumVoice }
+            : { text: "Hi, I'm Kael. This is my premium voice — smooth enough?" }),
+        });
+        if (!r.ok) {
+          let msg = 'premium voice failed';
+          try { msg = (await r.json()).error || msg; } catch {}
+          flashBrainNote(msg.toLowerCase());
+          return;
+        }
+        const url = URL.createObjectURL(await r.blob());
+        const a = new Audio(url);
+        a.onended = a.onerror = () => URL.revokeObjectURL(url);
+        a.play().catch(() => URL.revokeObjectURL(url));
+      } catch { flashBrainNote('could not reach the premium voice'); }
+    });
+
+    // ====================================================================
+    //  PREMIUM VOICE (OpenAI TTS) — optional, smoother than the browser voice
+    //  Each streamed sentence is sent to the server's /api/tts proxy AS IT
+    //  ARRIVES, so audio for several sentences is generated in PARALLEL (low
+    //  latency). But clips are PLAYED in strict submission order, one at a time,
+    //  via a promise chain. A "generation" token lets barge-in / stop invalidate
+    //  everything still queued so a cancelled reply goes instantly silent.
+    // ====================================================================
+    let premiumAvailable = false;        // does the server have an OpenAI key?
+    let ttsMode = localStorage.getItem(TTS_MODE_KEY) || 'browser';  // 'browser' | 'premium'
+    let premiumVoice = localStorage.getItem(PVOICE_KEY) || '';      // '' → server default
+    let premiumWarnedThisTurn = false;   // only nag once per reply on failure
+
+    function premiumFailedOnce(msg) {
+      if (premiumWarnedThisTurn) return;
+      premiumWarnedThisTurn = true;
+      flashBrainNote(msg || 'premium voice failed — text only for this line');
+    }
+
+    const Premium = {
+      gen: 0,
+      chain: Promise.resolve(),
+      current: null,             // the HTMLAudioElement playing right now
+      aborts: new Set(),         // in-flight fetch controllers
+
+      speak(text) {
+        const gen = this.gen;
+        const ac = new AbortController();
+        this.aborts.add(ac);
+        utterancesPending++;
+        setState('speaking');
+
+        // Kick off synthesis immediately (don't wait for prior clips to finish).
+        const ready = fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(premiumVoice ? { text, voice: premiumVoice } : { text }),
+          signal: ac.signal,
+        })
+          .then((r) => { if (!r.ok) throw new Error('tts ' + r.status); return r.blob(); })
+          .then((b) => URL.createObjectURL(b))
+          .finally(() => this.aborts.delete(ac));
+
+        // …but enqueue PLAYBACK so order is preserved.
+        this.chain = this.chain.then(async () => {
+          if (gen !== this.gen) { ready.then(URL.revokeObjectURL).catch(() => {}); return; }
+          let url;
+          try { url = await ready; }
+          catch { if (gen === this.gen) premiumFailedOnce(); return; }   // aborts are silent (gen changed)
+          if (gen !== this.gen) { URL.revokeObjectURL(url); return; }
+          await this.playClip(url);
+        }).finally(() => { utterancesPending--; maybeFinishSpeaking(); });
+      },
+
+      playClip(url) {
+        return new Promise((resolve) => {
+          const a = new Audio(url);
+          this.current = a;
+          const done = () => { URL.revokeObjectURL(url); if (this.current === a) this.current = null; resolve(); };
+          a.onended = done;
+          a.onerror = done;
+          a.play().catch(done);
+        });
+      },
+
+      // Barge-in / stop: drop everything queued and silence the current clip.
+      cancel() {
+        this.gen++;
+        for (const ac of this.aborts) { try { ac.abort(); } catch {} }
+        this.aborts.clear();
+        if (this.current) { try { this.current.pause(); } catch {} this.current = null; }
+        this.chain = Promise.resolve();
+      },
+    };
+
+    // Stop ALL speech — both the browser synth and the premium player.
+    function stopSpeaking() {
+      if (canSpeak) TTS.cancel();
+      Premium.cancel();
+    }
+
     let ttsBuffer = '';
     let utterancesPending = 0;
     let streamDone = false;
 
+    // Speak one sentence with whichever engine is active. Premium when it's
+    // enabled AND available; otherwise the free browser voice.
     function speakSentence(text) {
-      if (!canSpeak || !text) return;
+      if (!text) return;
+      if (ttsMode === 'premium' && premiumAvailable) { Premium.speak(text); return; }
+      if (!canSpeak) return;
       const u = new SpeechSynthesisUtterance(text);
       u.lang = 'en-US';
       u.rate = SPEAK_RATE;
@@ -622,7 +907,16 @@
       if (streamDone && utterancesPending <= 0 && !pttActive) backToReady();
     }
     function backToReady() {
-      if (!pttActive) setState('idle');   // don't stomp on a fresh barge-in hold
+      if (pttActive) return;              // a fresh barge-in hold is in progress
+      // hands-free: drop straight back into listening for the next thing you say.
+      // Clear the finished 'speaking'/'thinking' state FIRST, otherwise armOpenMic's
+      // own "don't listen mid-reply" guard would bail and leave us stuck on speaking.
+      if (micMode === 'open' && canListen && !openMicPaused) {
+        state = 'idle';
+        armOpenMic();
+        return;
+      }
+      setState('idle');
     }
 
     // ---- conversation log ----
@@ -637,16 +931,96 @@
       return bubble;
     }
 
+    // ====================================================================
+    //  LISTENING MODE — record everything, reply to nothing
+    //  Triggered by voice or text: "switch to listening mode" → on,
+    //  "switch back to normal mode" / "normal mode" → off. While on, every
+    //  utterance is logged (shown + saved to data/listening.jsonl) and the
+    //  model is never called, so KAEL stays silent.
+    // ====================================================================
+    function normalizeCmd(s) {
+      return (s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+    function isEnterListening(s) {
+      const t = normalizeCmd(s);
+      return /\b(switch|change|go|put you|put yourself|enter|start|activate|turn on)\b.*\blistening mode\b/.test(t)
+        || /^listening mode$/.test(t)
+        || /\bstart listening mode\b/.test(t);
+    }
+    function isExitListening(s) {
+      const t = normalizeCmd(s);
+      return /\b(normal|regular)\s+mode\b/.test(t)
+        || /\bback to normal\b/.test(t)
+        || /\b(exit|leave|stop|end|quit|turn off|deactivate)\b.*\b(listening|listen)\b/.test(t)
+        || /^normal$/.test(t);
+    }
+
+    // Speak one short control confirmation, then settle back to listening/idle.
+    // Reuses the turn's finish path so open-mic re-arms after the confirmation.
+    function announce(text) {
+      streamDone = true;
+      utterancesPending = 0;
+      if (canSpeak || (ttsMode === 'premium' && premiumAvailable)) speakSentence(text);
+      else backToReady();
+    }
+    let recBadge = null;
+    function setRecBadge(on) {
+      if (!recBadge) {
+        recBadge = document.createElement('div');
+        recBadge.textContent = '● REC — listening mode';
+        recBadge.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);' +
+          'z-index:9999;background:#b00020;color:#fff;font:600 12px/1 system-ui,sans-serif;' +
+          'letter-spacing:.04em;padding:7px 12px;border-radius:999px;' +
+          'box-shadow:0 2px 12px rgba(0,0,0,.4);pointer-events:none;';
+        document.body.appendChild(recBadge);
+      }
+      recBadge.style.display = on ? 'block' : 'none';
+    }
+    function enterListeningMode() {
+      captureMode = 'listening';
+      setRecBadge(true);
+      addMessage('kael', 'KAEL', '● Listening mode — I\'ll record what you say and stay quiet. Say "normal mode" to switch back.');
+      statusEl.textContent = 'listening mode — recording';
+      announce('Listening mode on.');
+    }
+    function exitListeningMode() {
+      captureMode = 'normal';
+      setRecBadge(false);
+      addMessage('kael', 'KAEL', '○ Back to normal mode.');
+      announce('Back to normal.');
+    }
+    function recordListening(text) {
+      addMessage('user', 'HEARD', text);
+      fetch('/api/listen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      }).catch(() => {});
+      interimEl.textContent = '';
+      backToReady();   // open-mic keeps listening; push-to-talk goes idle
+    }
+
     // ---- the turn: send to KAEL, stream reply, speak it ----
     async function handleUtterance(message) {
+      // Mode controls + passive capture are handled BEFORE any model call.
+      if (captureMode === 'normal' && isEnterListening(message)) { enterListeningMode(); return; }
+      if (captureMode === 'listening') {
+        if (isExitListening(message)) { exitListeningMode(); return; }
+        recordListening(message);
+        return;
+      }
+
       interimEl.textContent = '';
+      clearTimeout(openSilenceTimer);
+      openMicActive = false; openBuffer = '';     // go deaf while we think/speak
       if (recognizing) { try { recognition.abort(); } catch {} recognizing = false; }
       setState('thinking');
       addMessage('user', 'YOU', message);
 
       const bubble = addMessage('kael', 'KAEL', '');
       ttsBuffer = ''; utterancesPending = 0; streamDone = false;
-      if (canSpeak) TTS.cancel();
+      premiumWarnedThisTurn = false;
+      stopSpeaking();
       abortController = new AbortController();
 
       try {
@@ -721,23 +1095,54 @@
 
     // ---- controls ----
     stopBtn.addEventListener('click', () => {
-      if (canSpeak) TTS.cancel();
+      stopSpeaking();
       if (abortController) { try { abortController.abort(); } catch {} }
-      setState('idle');
+      backToReady();   // open-mic resumes listening; push-to-talk goes idle
     });
 
     newChatBtn.addEventListener('click', async () => {
       if (abortController) { try { abortController.abort(); } catch {} }
-      if (canSpeak) TTS.cancel();
+      stopSpeaking();
+      stopOpenMic(); openBuffer = '';
       await fetch('/api/reset', { method: 'POST' }).catch(() => {});
       log.innerHTML = '';
-      setState('idle');
+      backToReady();   // open-mic resumes listening; push-to-talk goes idle
     });
+
+    // ---- input mode (push-to-talk ⇄ open mic) ----
+    // Switch between modes: tear down whatever was running, then start the new
+    // one. Hides the push-to-talk key row when it's irrelevant.
+    function applyMicMode(persist) {
+      if (micMode !== 'ptt' && micMode !== 'open') micMode = 'ptt';
+      if (persist) { try { localStorage.setItem(MIC_MODE_KEY, micMode); } catch {} }
+      if (micModeSelect) micModeSelect.value = micMode;
+      if (pttKeyRow) pttKeyRow.style.display = micMode === 'ptt' ? '' : 'none';
+
+      // never flip modes mid-reply — let the current turn finish.
+      if (state === 'thinking' || state === 'speaking') return;
+
+      if (micMode === 'open') {
+        pttHeld = false; pttActive = false;
+        openMicPaused = false;
+        armOpenMic();                 // start listening now (if allowed)
+      } else {
+        stopOpenMic();
+        openMicPaused = false;
+        setState('idle');             // refreshes the "hold X to talk" hint
+      }
+    }
+    if (micModeSelect) {
+      micModeSelect.addEventListener('change', () => {
+        initAudio();                  // this counts as the user gesture that unlocks audio/mic
+        micMode = micModeSelect.value;
+        applyMicMode(true);
+      });
+    }
 
     // ---- settings panel ----
     settingsBtn.addEventListener('click', () => {
       const open = settingsOverlay.classList.toggle('open');
-      if (open) { populateVoiceSelect(); updateBindingUI(); }
+      if (open) { populateVoiceSelect(); updateBindingUI(); if (micModeSelect) micModeSelect.value = micMode; }
       else if (capturing) endCapture();
     });
     settingsClose.addEventListener('click', () => { if (capturing) endCapture(); settingsOverlay.classList.remove('open'); });
@@ -782,10 +1187,10 @@
         flashBrainNote(data.provider === 'claude' ? 'switched to Claude' : 'switched to the free local model');
       } catch { flashBrainNote('could not reach the server'); }
     });
-    fetch('/api/provider')
-      .then((r) => r.json())
-      .then((d) => { if (d && d.provider) setProviderLabel(d.provider); })
-      .catch(() => {});
+    (async () => {
+      const d = await fetchJSONRetry('/api/provider');
+      if (d && d.provider) setProviderLabel(d.provider);
+    })();
 
     // ---- text fallback ----
     input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 120) + 'px'; });
@@ -798,9 +1203,27 @@
       handleUtterance(text);
     }
 
+    // ---- PWA: register the service worker (makes KAEL an installable app) ----
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
+      });
+    }
+
     // ---- boot ----
     updateBindingUI();
     setState('idle');
+    applyMicMode(false);   // reflect the saved input mode; starts open-mic if selected
+
+    // Some browsers won't open the mic until the page has seen a user gesture.
+    // The first click/keypress re-arms open-mic if an automatic start didn't take.
+    function gestureArm() {
+      initAudio();
+      if (micMode === 'open' && !openMicPaused && !recognizing) armOpenMic();
+    }
+    window.addEventListener('pointerdown', gestureArm, { once: true });
+    window.addEventListener('keydown', gestureArm, { once: true });
+
     if (!canSpeak && !canListen) {
       unsupportedEl.style.display = 'block';
       unsupportedEl.textContent = 'Your browser does not support voice. Use Chrome or Edge for the full JARVIS experience — typing still works.';

@@ -12,13 +12,20 @@ fallback when you'd rather type.
 
 ## Features
 
-- **Push-to-talk** — hold a key (or mouse button) you choose, speak, and release
-  to send. No wake word, and the mic is only ever live while you hold it. A
-  reactive orb shows when it's listening, thinking, or speaking. Rebind the key
-  anytime in ⚙ Settings, or just press &amp; hold the orb.
+- **Push-to-talk _or_ open mic** — pick your input style in ⚙ Settings.
+  **Push-to-talk** (default): hold a key (or mouse button) you choose, speak, and
+  release to send — the mic is only ever live while you hold it. **Open mic**
+  (hands-free): KAEL listens continuously and sends automatically when you pause,
+  then re-arms after it replies; tap the orb to pause/resume or to interrupt it
+  mid-sentence. A reactive orb shows when it's listening, thinking, or speaking.
 - **Natural voice** — KAEL prefers the highest-quality neural / "natural" voice
   your browser offers (smoothest in Microsoft Edge) instead of the robotic system
   default, and you can pick the exact voice in ⚙ Settings.
+- **Premium voice (optional)** — set an OpenAI key and ⚙ Settings gains a toggle
+  for OpenAI's neural TTS (`tts-1-hd`) — dramatically smoother than any browser
+  voice. The key stays server-side (the browser only ever receives audio), and
+  KAEL falls back to the free voice automatically if it's off or unavailable.
+  Costs roughly a dollar a month at single-user volume.
 - **Spoken, concise answers** — replies are tuned to be short and conversational
   (one to three sentences), since they're read aloud — no walls of text or URLs.
 - **Streaming + sentence-chunked speech** — KAEL starts speaking as soon as the
@@ -26,6 +33,14 @@ fallback when you'd rather type.
 - **Optional web search** via the Brave Search API — triggered when you say
   "search …" or ask for current info. No Brave key? KAEL just answers from
   knowledge.
+- **Always knows the time** — the current German (`Europe/Berlin`) date and time is
+  injected into KAEL's context on every turn, so it's time-aware without you asking
+  (greetings, "today/tonight", scheduling) — it just won't recite the clock unless
+  it's relevant. Change the zone with `KAEL_TIMEZONE` in `.env`.
+- **Listening mode** — say "switch to listening mode" and KAEL goes quiet and simply
+  records everything it hears (shown on screen + saved to `data/listening.jsonl`,
+  gitignored) without replying. Say "normal mode" to switch back. Great for dictation
+  or capturing a conversation hands-free.
 - **Persistent long-term memory** — KAEL remembers across restarts and reboots.
   It keeps a rolling summary of older chats plus a profile of durable facts about
   you, saved to disk (`data/`, gitignored). The summarizing is done by the free
@@ -55,7 +70,10 @@ kael/
 ├── server.js          # Express server: local/Claude streaming + optional web search
 ├── package.json
 ├── public/
-│   └── index.html     # the entire UI (HTML + CSS + JS)
+│   ├── index.html            # the entire UI (HTML + CSS + JS)
+│   ├── manifest.webmanifest  # PWA manifest (installable app)
+│   ├── sw.js                 # service worker (installability + offline shell)
+│   └── icons/                # app icons (orb) + .ico for the desktop shortcut
 ├── data/              # persistent long-term memory (gitignored, created at runtime)
 └── .env.example       # required/optional keys
 ```
@@ -96,7 +114,11 @@ cp .env.example .env
 |---|---|---|
 | `OLLAMA_MODEL` | No | Local model to use (default `llama3.2`). |
 | `OLLAMA_URL` | No | Where Ollama is listening (default `http://localhost:11434`). |
+| `KAEL_TIMEZONE` | No | IANA timezone KAEL is "aware" of (default `Europe/Berlin`). |
 | `ANTHROPIC_API_KEY` | No | Only to enable the **Claude** backend. Get one at <https://console.anthropic.com/>. |
+| `OPENAI_API_KEY` | No | Enables the **premium voice** (OpenAI neural TTS). Get one at <https://platform.openai.com/api-keys>. Omit to use the free browser voice. |
+| `OPENAI_TTS_MODEL` | No | Premium voice model: `tts-1-hd` (default, best) or `tts-1` (cheaper). |
+| `OPENAI_TTS_VOICE` | No | Default premium voice: `alloy`, `echo`, `fable`, `onyx`, `nova`, or `shimmer` (default — softest). |
 | `BRAVE_API_KEY` | No | Live web search. Free tier at <https://brave.com/search/api/>. Omit to disable search. |
 | `PORT` | No | Port to run on (default `3000`). |
 
@@ -107,6 +129,22 @@ npm start
 ```
 
 Open **<http://localhost:3000>** in Chrome or Edge.
+
+## Install as an app
+
+KAEL is a **PWA**, so you can run it as a real app with its own window and icon —
+no browser tabs, no address bar — while keeping all the voice features (which need
+a Chrome/Edge engine to work).
+
+- **Install it:** open KAEL in **Edge or Chrome**, then use the **install icon** in
+  the address bar (or **⋯ menu → Apps → Install this site as an app**). It gets a
+  Start-menu / taskbar entry with the KAEL orb icon and launches in its own window.
+- **Or just an app window:** the included **Desktop shortcut** (and the autostart at
+  login) open KAEL with `msedge --app=http://localhost:3000` — a standalone window
+  without installing anything.
+
+Either way the server still runs locally (`npm start` / the autostart task); the app
+window is just a clean front-end onto `http://localhost:3000`.
 
 ## Switching backends (free local ⇄ Claude)
 
@@ -134,11 +172,21 @@ You can also set the startup default with `KAEL_PROVIDER=ollama` (or `claude`) i
    back, or forward). Press Esc to cancel. Your choice is saved across restarts.
 3. **No hands on the keyboard?** Press **and hold the orb** (or the 🎤 button) to
    talk instead — release to send. Works with touch, too.
-4. **Barge in anytime.** Start holding to talk while KAEL is mid-reply and it stops
-   and listens to you immediately.
+4. **Prefer fully hands-free?** Open **⚙ Settings → Input mode → Open mic**. Now
+   KAEL listens all the time and sends automatically a moment after you stop
+   talking — no key to hold. Tap the orb to pause/resume listening, or to cut KAEL
+   off while it's speaking. (It briefly stops listening while it talks so it never
+   hears its own voice — best in a reasonably quiet room.)
+5. **Barge in anytime.** In push-to-talk, start holding to talk while KAEL is
+   mid-reply and it stops and listens immediately. In open mic, tap the orb.
 5. **⏹ stops** KAEL mid-sentence without sending anything. **new chat** clears the
    on-screen conversation (long-term memory is kept).
-6. Prefer to type? Use the text box at the bottom anytime — KAEL still speaks its reply.
+6. **Just want it to take notes?** Say **"switch to listening mode"** (or type it).
+   KAEL stops replying and records everything it hears — each line is shown on screen
+   and appended to `data/listening.jsonl`. A red **● REC** badge stays up the whole
+   time. Say **"normal mode"** (or "switch back to normal mode") to resume. Pairs
+   naturally with open mic for fully hands-free capture.
+7. Prefer to type? Use the text box at the bottom anytime — KAEL still speaks its reply.
 
 The orb tells you the state at a glance: gently breathing = idle/ready, teal sonar
 pulses = listening (key held), amber spin = thinking, fast bright pulse = speaking.
