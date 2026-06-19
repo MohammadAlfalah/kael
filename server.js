@@ -27,7 +27,9 @@ const MAX_TOKENS = 4096;
 // Local Ollama (the free default). Override with env vars to use a beefier model
 // (e.g. OLLAMA_MODEL=qwen2.5 or llama3.1) — your GPU/RAM is the only limit.
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2';
+// The active local model. `let` (not const) so the UI can switch it at runtime
+// via POST /api/config; OLLAMA_MODEL env sets the startup default.
+let OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2';
 // Keep the model resident in memory between turns so replies aren't slowed by a
 // cold reload. Ollama's default is 5 min; we hold it longer. Each request resets
 // the timer, so during a conversation it stays warm. Set "-1" to keep it loaded
@@ -61,12 +63,21 @@ const PROVIDERS = new Set(['ollama', 'claude']);
 let provider =
   PROVIDERS.has(process.env.KAEL_PROVIDER || '') ? process.env.KAEL_PROVIDER : 'ollama';
 
+// Runtime, owner-tunable overrides (set from the Settings panel via POST /api/config).
+// null = use the built-in default. Persisted to config.json so they survive the
+// keep-alive loop's frequent relaunches, just like KAEL's memory.
+let sessionPersona = null;       // overrides KAEL_SYSTEM_PROMPT when set
+let sessionTemperature = null;   // overrides the local model's default sampling temp
+
 // ---- Long-term memory (persisted to disk) -----------------------------------
 // KAEL remembers across restarts/reboots. These tune how much is fed to the
 // model verbatim vs. folded into a rolling summary so the context window never
 // overflows on the local model.
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = process.env.KAEL_DATA_DIR
+  ? path.resolve(process.env.KAEL_DATA_DIR)
+  : path.join(__dirname, 'data');
 const MEMORY_FILE = path.join(DATA_DIR, 'memory.json');
+const CONFIG_FILE = path.join(DATA_DIR, 'config.json');      // persona / temperature / model overrides
 const TRANSCRIPT_FILE = path.join(DATA_DIR, 'transcript.jsonl');
 const LISTEN_FILE = path.join(DATA_DIR, 'listening.jsonl');  // "listening mode" capture log
 // KAEL always knows the current German time (Varyn's timezone). Injected into the
@@ -151,6 +162,36 @@ function saveMemory() {
   return saving;
 }
 
+// ---- Owner config persistence (persona / temperature / model) ----------------
+// Mirrors the memory pattern: load once at boot, atomic serialized save on change,
+// so the Settings panel's choices outlive the keep-alive loop's relaunches.
+async function loadConfig() {
+  try {
+    const data = JSON.parse(await readFile(CONFIG_FILE, 'utf8'));
+    sessionPersona = (typeof data.persona === 'string' && data.persona) ? data.persona : null;
+    sessionTemperature = (typeof data.temperature === 'number' && data.temperature >= 0 && data.temperature <= 2)
+      ? data.temperature : null;
+    if (typeof data.model === 'string' && data.model) OLLAMA_MODEL = data.model;
+    console.log(`Config loaded: model=${OLLAMA_MODEL}, persona=${sessionPersona ? 'custom' : 'default'}, temp=${sessionTemperature ?? 'default'}.`);
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error('Config file unreadable; using defaults.', err.message);
+  }
+}
+
+let savingConfig = Promise.resolve();
+function saveConfig() {
+  const snapshot = JSON.stringify(
+    { version: 1, persona: sessionPersona, temperature: sessionTemperature, model: OLLAMA_MODEL }, null, 2);
+  savingConfig = savingConfig
+    .then(async () => {
+      const tmp = `${CONFIG_FILE}.tmp`;
+      await writeFile(tmp, snapshot, 'utf8');
+      await rename(tmp, CONFIG_FILE);
+    })
+    .catch((err) => console.error('Failed to save config:', err.message));
+  return savingConfig;
+}
+
 // Append one message to the permanent, append-only transcript (never trimmed).
 function appendTranscript(role, content) {
   const line = JSON.stringify({ at: new Date().toISOString(), role, content }) + '\n';
@@ -176,7 +217,7 @@ function germanNow() {
 // Compose a turn's system prompt: persona + current German time + durable profile
 // + older-conversation summary. The recent window is sent separately as real turns.
 function buildSystemPrompt() {
-  let sys = KAEL_SYSTEM_PROMPT;
+  let sys = sessionPersona || KAEL_SYSTEM_PROMPT;
   const now = germanNow();
   if (now) {
     sys +=
@@ -365,7 +406,9 @@ async function streamFromOllama(messages, send, signal, system) {
       stream: true,
       keep_alive: OLLAMA_KEEP_ALIVE,   // keep the model warm → faster next reply
       // Roomier context so the long-term summary + recent window both fit.
-      options: { num_ctx: OLLAMA_CTX },
+      options: sessionTemperature == null
+        ? { num_ctx: OLLAMA_CTX }
+        : { num_ctx: OLLAMA_CTX, temperature: sessionTemperature },
     }),
     signal,
   });
@@ -605,6 +648,120 @@ app.get('/api/memory', (_req, res) => {
   });
 });
 
+// Read a JSON-Lines file into parsed objects (skips bad lines; [] if missing).
+async function readJsonl(file) {
+  try {
+    const raw = await readFile(file, 'utf8');
+    return raw.split('\n').map((l) => l.trim()).filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
+// The visible conversation the UI restores on page load — the same recent window
+// the model sees. Lets the on-screen transcript survive a reload.
+app.get('/api/history', (_req, res) => {
+  res.json({ messages: memory.recent });
+});
+
+// Page/search the FULL permanent transcript (beyond the recent window). Newest
+// last; `q` filters by a case-insensitive substring of the message content.
+app.get('/api/transcript', async (req, res) => {
+  try {
+    let all = await readJsonl(TRANSCRIPT_FILE);
+    const q = (req.query.q ?? '').toString().trim().toLowerCase();
+    if (q) all = all.filter((m) => String(m.content || '').toLowerCase().includes(q));
+    const total = all.length;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 60, 1), 500);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+    const end = Math.max(total - offset, 0);   // offset counts back from the newest
+    const start = Math.max(end - limit, 0);
+    res.json({ total, messages: all.slice(start, end) });
+  } catch {
+    res.status(500).json({ error: 'Could not read the transcript.' });
+  }
+});
+
+// The "listening mode" capture log, for in-app review/export.
+app.get('/api/listening', async (_req, res) => {
+  try { res.json({ lines: await readJsonl(LISTEN_FILE) }); }
+  catch { res.status(500).json({ error: 'Could not read the listening log.' }); }
+});
+
+// Replace the durable profile facts (used by the memory editor to delete/keep).
+app.post('/api/memory', async (req, res) => {
+  const incoming = Array.isArray(req.body?.profile) ? req.body.profile : null;
+  if (!incoming) return res.status(400).json({ error: 'Expected { profile: string[] }.' });
+  const facts = [];
+  for (const f of incoming) {
+    const t = String(f ?? '').trim();
+    if (t && !facts.some((x) => x.toLowerCase() === t.toLowerCase())) facts.push(t);
+  }
+  memory.profile = facts.slice(0, MAX_PROFILE_FACTS);
+  await saveMemory();
+  res.json({ profile: memory.profile });
+});
+
+// ---- Owner config: persona, temperature, local model ------------------------
+
+async function installedModels() {
+  try {
+    const r = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(1500) });
+    if (!r.ok) return [];
+    return ((await r.json()).models ?? []).map((m) => m.name);
+  } catch { return []; }
+}
+
+app.get('/api/config', async (_req, res) => {
+  res.json({
+    persona: sessionPersona,             // null = using the built-in default
+    defaultPersona: KAEL_SYSTEM_PROMPT,
+    temperature: sessionTemperature,     // null = model default
+    model: OLLAMA_MODEL,
+    models: await installedModels(),
+    provider,
+  });
+});
+
+app.post('/api/config', async (req, res) => {
+  const b = req.body || {};
+  let changed = false;
+  if ('persona' in b) {
+    if (b.persona != null && typeof b.persona !== 'string') {
+      return res.status(400).json({ error: 'Persona must be a string.' });
+    }
+    const p = (b.persona ?? '').trim();
+    sessionPersona = p ? p.slice(0, 8000) : null;   // "" resets to default
+    changed = true;
+  }
+  if ('temperature' in b) {
+    if (b.temperature == null || b.temperature === '') sessionTemperature = null;
+    else {
+      const t = Number(b.temperature);
+      if (Number.isNaN(t) || t < 0 || t > 2) return res.status(400).json({ error: 'Temperature must be between 0 and 2.' });
+      sessionTemperature = t;
+    }
+    changed = true;
+  }
+  if ('model' in b && b.model) {
+    const next = String(b.model);
+    const models = await installedModels();
+    if (!models.some((n) => n === next || n.startsWith(`${next}:`))) {
+      return res.status(400).json({ error: `Model "${next}" is not installed. Pull it with: ollama pull ${next}` });
+    }
+    OLLAMA_MODEL = next;
+    changed = true;
+    // Don't preload mid-reply: warming a (possibly different) model while a turn
+    // is streaming makes Ollama swap models on the GPU and stalls the live answer.
+    if (!activeController) warmUpModel();
+  }
+  if (changed) saveConfig();   // persist so the choice survives the next relaunch
+  res.json({ persona: sessionPersona, temperature: sessionTemperature, model: OLLAMA_MODEL });
+});
+
 // Health + readiness. Pings Ollama so the UI can tell whether the local model
 // is actually reachable and installed.
 app.get('/api/health', async (_req, res) => {
@@ -718,6 +875,7 @@ async function warmUpModel() {
 // Bring up persistent memory before accepting traffic, then start the server.
 await mkdir(DATA_DIR, { recursive: true }).catch(() => {});
 await loadMemory();
+await loadConfig();   // restore persona / temperature / model chosen in the Settings panel
 
 app.listen(PORT, () => {
   console.log(`KAEL is live → http://localhost:${PORT}`);

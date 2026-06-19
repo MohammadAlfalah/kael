@@ -74,6 +74,8 @@
     }
     /* concentric rings */
     .ring { position: absolute; border-radius: 50%; border: 1px solid rgba(94,234,212,.25); inset: 0; opacity: 0; pointer-events: none; }
+    /* audio-reactive waveform ring (canvas overlay; sits over the orb) */
+    .orb-viz { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 
     /* idle: gentle breathing */
     .stage[data-state="idle"] .orb { animation: breathe 4s ease-in-out infinite; filter: saturate(.7) brightness(.8); }
@@ -133,6 +135,36 @@
     .msg.kael .who { color: var(--accent); }
     .msg.kael .bubble { background: #10151b; }
     .msg.error .bubble { border-color: var(--danger); color: #ffd5d5; }
+    /* per-message actions + timestamp (hover-revealed) */
+    .msg-acts { display: flex; align-items: center; gap: 8px; min-height: 14px; font-family: var(--mono); font-size: 10px; color: var(--muted); }
+    .msg.user .msg-acts { justify-content: flex-end; }
+    .msg-act { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 1px 4px; border-radius: 5px; font: inherit; letter-spacing: .5px; opacity: 0; transition: opacity .15s, color .15s; }
+    .msg:hover .msg-act { opacity: .7; }
+    .msg-act:hover { color: var(--accent); opacity: 1; }
+    .msg-ts { opacity: .5; letter-spacing: .5px; }
+    /* on-screen markdown rendering */
+    .bubble a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+    .bubble strong { font-weight: 700; color: #fff; }
+    .bubble em { font-style: italic; }
+    .bubble .md-code { font-family: var(--mono); font-size: 12.5px; background: #0b0f14; border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }
+    .bubble .md-pre { background: #0b0f14; border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; overflow: auto; margin: 8px 0; }
+    .bubble .md-pre code { font-family: var(--mono); font-size: 12.5px; white-space: pre; background: none; border: none; padding: 0; }
+    .bubble .md-list { margin: 6px 0; padding-left: 22px; }
+    .bubble .md-list li { margin: 2px 0; }
+    /* settings: control panel */
+    .settings { max-height: 90vh; overflow-y: auto; }
+    .persona-input { width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font: 13px/1.5 var(--sans); padding: 8px 10px; resize: vertical; min-height: 84px; }
+    .persona-input:focus { outline: none; border-color: var(--accent); }
+    .mini-btn.danger { color: var(--danger); border-color: rgba(255,107,107,.4); }
+    .mini-btn.danger:hover { border-color: var(--danger); }
+    .memory-box { display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto; padding: 2px; }
+    .memory-empty { font-size: 12px; color: var(--muted); font-style: italic; }
+    .memory-facts { display: flex; flex-direction: column; gap: 5px; }
+    .memory-fact { display: flex; align-items: center; gap: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px 6px 11px; }
+    .memory-fact span { flex: 1; font-size: 13px; line-height: 1.45; }
+    .memory-del { flex: 0 0 auto; background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 6px; }
+    .memory-del:hover { color: var(--danger); background: rgba(255,107,107,.08); }
+    .memory-summary { font-size: 12.5px; line-height: 1.5; color: var(--muted); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 11px; }
 
     /* ---- Controls ---- */
     footer { padding: 10px 16px 16px; border-top: 1px solid var(--border); background: var(--bg); }
@@ -214,6 +246,7 @@
       <div class="orb-wrap" id="orbWrap" role="button" aria-label="Press and hold to talk to KAEL">
         <span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span>
         <div class="orb"></div>
+        <canvas class="orb-viz" id="orbViz" aria-hidden="true"></canvas>
       </div>
       <div class="status" id="status">hold to talk</div>
       <div class="interim" id="interim"></div>
@@ -280,6 +313,39 @@
         <span class="hint">Far smoother and more natural than any browser voice (OpenAI <b>tts-1-hd</b>). Uses your OpenAI key — about a dollar a month at normal use. Leave off to keep the free browser voice above. <b>shimmer</b> is the softest, most airy option.</span>
       </div>
 
+      <div class="setting-row">
+        <span class="label">Brain</span>
+        <div class="row">
+          <select id="modelSelect" title="Local model"></select>
+        </div>
+        <div class="row" style="margin-top:8px;">
+          <span class="label" style="font-size:12px;min-width:84px;">Temperature</span>
+          <input type="range" id="tempRange" min="0" max="2" step="0.1" style="flex:1;">
+          <span class="binding-chip" id="tempVal" style="min-width:56px;text-align:center;">default</span>
+        </div>
+        <span class="hint">Switch the local model (it must be pulled via <b>ollama pull</b>) and how varied replies are — lower temperature is more focused, higher is more creative. "default" uses the model's own setting.</span>
+      </div>
+
+      <div class="setting-row">
+        <span class="label">Persona</span>
+        <textarea id="personaInput" rows="5" class="persona-input"></textarea>
+        <div class="row" style="margin-top:6px;">
+          <button class="mini-btn" id="personaSave">Save persona</button>
+          <button class="mini-btn" id="personaReset">Reset to default</button>
+        </div>
+        <span class="hint">KAEL's character and instructions (its system prompt). Edit to retune its tone or role; <b>Reset</b> restores the built-in default.</span>
+      </div>
+
+      <div class="setting-row">
+        <span class="label">Memory</span>
+        <div id="memoryBox" class="memory-box"></div>
+        <div class="row" style="margin-top:6px;">
+          <button class="mini-btn" id="memoryRefresh">Refresh</button>
+          <button class="mini-btn danger" id="memoryForget">Forget everything</button>
+        </div>
+        <span class="hint">What KAEL durably remembers about you. Remove a single fact with ✕, or wipe it all. (Separate from the chat — "new chat" keeps these.)</span>
+      </div>
+
       <div class="row" style="justify-content:flex-end;">
         <button class="mini-btn" id="settingsClose">Done</button>
       </div>
@@ -314,6 +380,15 @@
     const premiumToggle = document.getElementById('premiumToggle');
     const premiumVoiceSelect = document.getElementById('premiumVoiceSelect');
     const testPremiumBtn = document.getElementById('testPremiumBtn');
+    const modelSelect = document.getElementById('modelSelect');
+    const tempRange = document.getElementById('tempRange');
+    const tempVal = document.getElementById('tempVal');
+    const personaInput = document.getElementById('personaInput');
+    const personaSave = document.getElementById('personaSave');
+    const personaReset = document.getElementById('personaReset');
+    const memoryBox = document.getElementById('memoryBox');
+    const memoryRefresh = document.getElementById('memoryRefresh');
+    const memoryForget = document.getElementById('memoryForget');
 
     // ---- feature detection ----
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -362,6 +437,9 @@
       const labels = { idle: holdHint(), listening: 'listening…', thinking: 'thinking…', speaking: 'speaking…' };
       statusEl.textContent = labels[s] || '';
       if (s !== 'listening') interimEl.textContent = '';
+      // mic visualizer lives only while listening, so the OS mic indicator
+      // tracks the listening state instead of staying on continuously.
+      if (s === 'listening') Viz.startMic(); else Viz.stopMic();
     }
     function holdHint() {
       if (!canListen) return 'type to talk to KAEL';
@@ -848,7 +926,8 @@
         return new Promise((resolve) => {
           const a = new Audio(url);
           this.current = a;
-          const done = () => { URL.revokeObjectURL(url); if (this.current === a) this.current = null; resolve(); };
+          const src = Viz.tapElement(a);   // route through the analyser so the orb reacts to KAEL's voice
+          const done = () => { try { if (src) src.disconnect(); } catch {} URL.revokeObjectURL(url); if (this.current === a) this.current = null; resolve(); };
           a.onended = done;
           a.onerror = done;
           a.play().catch(done);
@@ -870,6 +949,121 @@
       if (canSpeak) TTS.cancel();
       Premium.cancel();
     }
+
+    // ---- Audio-reactive orb visualizer ----------------------------------
+    // A ring of radial bars around the orb, driven by a Web Audio AnalyserNode:
+    // the mic while you talk, and premium TTS while KAEL speaks. When no signal
+    // is tappable (the free browser voice can't be observed by Web Audio), it
+    // animates a gentle synthetic wave so the orb still feels alive. Every step
+    // is guarded — if AudioContext, <canvas>, or mic access is missing, the CSS
+    // orb animations simply carry on by themselves.
+    const Viz = {
+      canvas: null, g: null, analyser: null, freq: null,
+      micStream: null, micSource: null, micStarting: false, raf: 0, level: 0,
+
+      init() {
+        this.canvas = document.getElementById('orbViz');
+        if (!this.canvas || !this.canvas.getContext) return;
+        this.g = this.canvas.getContext('2d');
+        this.resize();
+        window.addEventListener('resize', () => this.resize());
+        const tick = (ts) => { this.draw(ts || 0); this.raf = requestAnimationFrame(tick); };
+        this.raf = requestAnimationFrame(tick);
+      },
+      resize() {
+        if (!this.canvas) return;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const r = this.canvas.getBoundingClientRect();
+        this.canvas.width = Math.round((r.width || 200) * dpr);
+        this.canvas.height = Math.round((r.height || 200) * dpr);
+      },
+      ensureAnalyser() {
+        if (this.analyser || !audioCtx) return this.analyser;
+        try {
+          const an = audioCtx.createAnalyser();
+          an.fftSize = 128;
+          an.smoothingTimeConstant = 0.82;
+          this.analyser = an;
+          this.freq = new Uint8Array(an.frequencyBinCount);
+        } catch { this.analyser = null; }
+        return this.analyser;
+      },
+      tap(node) { const an = this.ensureAnalyser(); if (an && node) { try { node.connect(an); } catch {} } },
+
+      // Route a premium-TTS <audio> element through the analyser so the orb
+      // reacts to KAEL's actual voice. Only when the context is running; on any
+      // failure the element just plays normally (no visualization).
+      tapElement(el) {
+        if (!audioCtx || audioCtx.state !== 'running' || !el) return null;
+        const an = this.ensureAnalyser(); if (!an) return null;
+        try {
+          const src = audioCtx.createMediaElementSource(el);
+          src.connect(an);
+          src.connect(audioCtx.destination);   // keep it audible
+          return src;                          // caller disconnects when the clip ends
+        } catch { return null; /* already tapped / unsupported — plays normally */ }
+      },
+
+      // Mic visualization: a getUserMedia stream that lives only while listening,
+      // so the OS mic indicator tracks the listening state (never always-on).
+      async startMic() {
+        if (this.micSource || this.micStarting || !audioCtx) return;
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+        this.micStarting = true;               // guard against overlapping starts during a flap
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          // bail if we stopped listening, or another start already won, while awaiting
+          if (state !== 'listening' || this.micSource) { stream.getTracks().forEach((t) => t.stop()); return; }
+          this.micStream = stream;
+          this.micSource = audioCtx.createMediaStreamSource(stream);
+          this.tap(this.micSource);            // mic → analyser only (never to destination → no echo)
+        } catch { /* denied / unavailable → synthetic wave only */ }
+        finally { this.micStarting = false; }
+      },
+      stopMic() {
+        if (this.micSource) { try { this.micSource.disconnect(); } catch {} this.micSource = null; }
+        if (this.micStream) { try { this.micStream.getTracks().forEach((t) => t.stop()); } catch {} this.micStream = null; }
+      },
+
+      draw(ts) {
+        const g = this.g; if (!g) return;
+        const W = this.canvas.width, H = this.canvas.height;
+        g.clearRect(0, 0, W, H);
+        const st = state;
+        const active = st === 'listening' || st === 'speaking';
+
+        // measured loudness 0..1 from the analyser (when anything is tapped)
+        let amp = 0;
+        if (this.analyser && active) {
+          this.analyser.getByteFrequencyData(this.freq);
+          let s = 0; for (let i = 0; i < this.freq.length; i++) s += this.freq[i];
+          amp = (s / this.freq.length) / 255;
+        }
+        const hasSignal = this.analyser && active && amp >= 0.01;
+        // speaking with no tappable signal (free browser voice) → keep it lively
+        const synthetic = active && !hasSignal ? 0.4 + 0.25 * Math.sin(ts / 140) : 0;
+        const target = active ? Math.max(amp * 1.6, synthetic, 0.05) : 0;
+        this.level += (target - this.level) * 0.18;
+
+        const cx = W / 2, cy = H / 2;
+        const R = Math.min(W, H) * 0.31;                 // inner radius ≈ orb edge
+        const BARS = this.freq ? Math.min(this.freq.length, 48) : 48;
+        const color = st === 'thinking' ? '245,177,76' : (st === 'speaking' ? '125,247,221' : '94,234,212');
+        g.lineCap = 'round';
+        g.lineWidth = Math.max(2, Math.min(W, H) * 0.018);
+        for (let i = 0; i < BARS; i++) {
+          const ang = (i / BARS) * Math.PI * 2 - Math.PI / 2;
+          const v = hasSignal
+            ? this.freq[i % this.freq.length] / 255
+            : (0.5 + 0.5 * Math.sin(ts / 200 + i * 0.6)) * this.level;
+          const len = R * 0.55 * v * (active ? 1 : 0);
+          const x1 = cx + Math.cos(ang) * R, y1 = cy + Math.sin(ang) * R;
+          const x2 = cx + Math.cos(ang) * (R + len), y2 = cy + Math.sin(ang) * (R + len);
+          g.strokeStyle = 'rgba(' + color + ',' + (0.22 + 0.6 * v) + ')';
+          g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+        }
+      },
+    };
 
     let ttsBuffer = '';
     let utterancesPending = 0;
@@ -919,13 +1113,93 @@
       setState('idle');
     }
 
+    // ---- markdown (ON-SCREEN only — spoken text always stays plain) ----
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+    // Tiny vanilla markdown → HTML (no library): code blocks, inline code, bold,
+    // italic, links, and bullet/numbered lists. Input is RAW text.
+    function renderMarkdown(text) {
+      const blocks = [];
+      // Strip our placeholder sentinel from raw input so a message can't forge or
+      // hijack a placeholder (would only ever print "undefined" — not an XSS — but
+      // tidy is better).
+      let s = String(text).replace(/\uE000/g, '');
+      s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, (m, lang, code) => {
+        blocks.push('<pre class="md-pre"><code>' + escapeHtml(code.replace(/\n$/, '')) + '</code></pre>');
+        return '\uE000B' + (blocks.length - 1) + '\uE000';
+      });
+      const inline = [];
+      s = s.replace(/`([^`\n]+)`/g, (m, code) => {
+        inline.push('<code class="md-code">' + escapeHtml(code) + '</code>');
+        return '\uE000I' + (inline.length - 1) + '\uE000';
+      });
+      s = escapeHtml(s);
+      s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/__([^_]+)__/g, '<strong>$1</strong>');
+      s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+      const out = []; let list = null;
+      const close = () => { if (list) { out.push('</' + list + '>'); list = null; } };
+      for (const line of s.split('\n')) {
+        const ul = line.match(/^\s*[-*]\s+(.*)$/);
+        const ol = line.match(/^\s*\d+\.\s+(.*)$/);
+        if (ul) { if (list !== 'ul') { close(); out.push('<ul class="md-list">'); list = 'ul'; } out.push('<li>' + ul[1] + '</li>'); }
+        else if (ol) { if (list !== 'ol') { close(); out.push('<ol class="md-list">'); list = 'ol'; } out.push('<li>' + ol[1] + '</li>'); }
+        else { close(); out.push(line.trim() === '' ? '' : line + '<br>'); }
+      }
+      close();
+      let html = out.join('').replace(/\uE000B(\d+)\uE000/g, (m, i) => blocks[i] ?? m).replace(/\uE000I(\d+)\uE000/g, (m, i) => inline[i] ?? m);
+      return html.replace(/(<br>\s*)+$/, '');
+    }
+    function finalizeBubble(bubble) {
+      if (bubble && bubble._raw) bubble.innerHTML = renderMarkdown(bubble._raw);
+    }
+
+    function fmtTime(ts) {
+      try { return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch { return ''; }
+    }
+    function copyText(t) {
+      if (navigator.clipboard) navigator.clipboard.writeText(t || '').then(() => flashBrainNote('copied'), () => {});
+    }
+    // Speak a whole message again, independent of the live turn.
+    function replayMessage(text) {
+      if (!text) return;
+      stopSpeaking();
+      if (!(canSpeak || (ttsMode === 'premium' && premiumAvailable))) return;
+      streamDone = true; utterancesPending = 0;
+      (text.match(/[^.!?…]+[.!?…]*/g) || [text]).forEach((s) => { const t = s.trim(); if (t) speakSentence(t); });
+    }
+
     // ---- conversation log ----
-    function addMessage(who, label, text) {
+    function addMessage(who, label, text, opts) {
+      opts = opts || {};
       const wrap = document.createElement('div');
       wrap.className = 'msg ' + who;
       const tag = document.createElement('div'); tag.className = 'who'; tag.textContent = label;
-      const bubble = document.createElement('div'); bubble.className = 'bubble'; if (text) bubble.textContent = text;
+      const bubble = document.createElement('div'); bubble.className = 'bubble';
+      bubble._raw = text || '';
+      bubble._prompt = opts.prompt || null;
+      if (text) bubble.textContent = text;
       wrap.appendChild(tag); wrap.appendChild(bubble);
+
+      const acts = document.createElement('div'); acts.className = 'msg-acts';
+      const mk = (txt, title, fn) => {
+        const b = document.createElement('button'); b.className = 'msg-act'; b.title = title; b.textContent = txt;
+        b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
+        return b;
+      };
+      acts.appendChild(mk('Copy', 'Copy text', () => copyText(bubble._raw)));
+      if (who === 'kael') {
+        if (canSpeak || (ttsMode === 'premium' && premiumAvailable)) acts.appendChild(mk('Replay', 'Speak this again', () => replayMessage(bubble._raw)));
+        if (bubble._prompt) acts.appendChild(mk('Regenerate', 'Ask again', () => handleUtterance(bubble._prompt)));
+      } else if (who === 'user' && label !== 'HEARD') {
+        acts.appendChild(mk('Resend', 'Send again', () => handleUtterance(bubble._raw)));
+      }
+      const ts = document.createElement('span'); ts.className = 'msg-ts';
+      ts.textContent = fmtTime(opts.ts || Date.now()) + (opts.provider ? ' · ' + opts.provider : '');
+      acts.appendChild(ts);
+      wrap.appendChild(acts);
+
       log.appendChild(wrap);
       log.scrollTop = log.scrollHeight;
       return bubble;
@@ -1017,7 +1291,7 @@
       setState('thinking');
       addMessage('user', 'YOU', message);
 
-      const bubble = addMessage('kael', 'KAEL', '');
+      const bubble = addMessage('kael', 'KAEL', '', { prompt: message, provider: currentProvider === 'claude' ? 'claude' : 'local' });
       ttsBuffer = ''; utterancesPending = 0; streamDone = false;
       premiumWarnedThisTurn = false;
       stopSpeaking();
@@ -1062,7 +1336,8 @@
             try { payload = JSON.parse(raw); } catch { continue; }
 
             if (payload.type === 'delta') {
-              bubble.textContent += payload.text;
+              bubble._raw += payload.text;
+              bubble.textContent = bubble._raw;
               log.scrollTop = log.scrollHeight;
               ttsBuffer += payload.text;
               drainTts(false);
@@ -1077,7 +1352,8 @@
         // stream finished — speak any trailing partial sentence, then go ready.
         streamDone = true;
         drainTts(true);
-        if (!bubble.textContent) bubble.textContent = '(no response)';
+        if (!bubble._raw) { bubble._raw = '(no response)'; bubble.textContent = '(no response)'; }
+        else finalizeBubble(bubble);   // render markdown on screen (the spoken text stayed plain)
         maybeFinishSpeaking();
       } catch (err) {
         streamDone = true;
@@ -1085,9 +1361,11 @@
           backToReady();
           return;
         }
-        bubble.parentNode.classList.add('error');
+        // the bubble may have been detached if the log was cleared mid-turn
+        if (bubble.parentNode) bubble.parentNode.classList.add('error');
         const note = '⚠ ' + err.message;
-        bubble.textContent = bubble.textContent ? bubble.textContent + '\n\n' + note : note;
+        bubble._raw = bubble._raw ? bubble._raw + '\n\n' + note : note;
+        bubble.textContent = bubble._raw;
         backToReady();
       } finally {
         abortController = null;
@@ -1143,12 +1421,90 @@
     // ---- settings panel ----
     settingsBtn.addEventListener('click', () => {
       const open = settingsOverlay.classList.toggle('open');
-      if (open) { populateVoiceSelect(); updateBindingUI(); if (micModeSelect) micModeSelect.value = micMode; }
+      if (open) { populateVoiceSelect(); updateBindingUI(); if (micModeSelect) micModeSelect.value = micMode; loadSettingsPanel(); }
       else if (capturing) endCapture();
     });
     settingsClose.addEventListener('click', () => { if (capturing) endCapture(); settingsOverlay.classList.remove('open'); });
     settingsOverlay.addEventListener('click', (e) => {
       if (e.target === settingsOverlay) { if (capturing) endCapture(); settingsOverlay.classList.remove('open'); }
+    });
+
+    // ---- control panel: model / temperature / persona / memory ----
+    function postConfig(body) {
+      return fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    }
+    async function loadSettingsPanel() {
+      try {
+        const cfg = await fetch('/api/config').then((r) => r.json());
+        const models = (cfg.models && cfg.models.length) ? cfg.models : [cfg.model];
+        modelSelect.innerHTML = '';
+        for (const m of models) { const o = document.createElement('option'); o.value = m; o.textContent = m; modelSelect.appendChild(o); }
+        modelSelect.value = models.find((m) => m === cfg.model || m.startsWith(cfg.model + ':')) || cfg.model;
+        if (cfg.temperature == null) { tempRange.value = '0.8'; tempVal.textContent = 'default'; }
+        else { tempRange.value = String(cfg.temperature); tempVal.textContent = String(cfg.temperature); }
+        personaInput.value = cfg.persona != null ? cfg.persona : (cfg.defaultPersona || '');
+        personaInput.dataset.def = cfg.defaultPersona || '';
+      } catch { /* server not ready / old build — leave controls as-is */ }
+      loadMemoryBox();
+    }
+    async function loadMemoryBox() {
+      let mem;
+      try { mem = await fetch('/api/memory').then((r) => r.json()); }
+      catch { memoryBox.innerHTML = '<div class="memory-empty">Could not load memory.</div>'; return; }
+      memoryBox.innerHTML = '';
+      // tolerate an old/partial server that omits the profile field
+      const profile = Array.isArray(mem.profile) ? mem.profile : [];
+      const summary = typeof mem.summary === 'string' ? mem.summary : '';
+      if (!profile.length && !summary) { memoryBox.innerHTML = '<div class="memory-empty">Nothing remembered yet.</div>'; return; }
+      if (profile.length) {
+        const facts = document.createElement('div'); facts.className = 'memory-facts';
+        profile.forEach((f, i) => {
+          const row = document.createElement('div'); row.className = 'memory-fact';
+          const span = document.createElement('span'); span.textContent = f;
+          const del = document.createElement('button'); del.className = 'memory-del'; del.textContent = '✕'; del.title = 'Forget this';
+          del.addEventListener('click', async () => {
+            const remaining = profile.filter((_, j) => j !== i);
+            await fetch('/api/memory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profile: remaining }) }).catch(() => {});
+            loadMemoryBox();
+          });
+          row.appendChild(span); row.appendChild(del); facts.appendChild(row);
+        });
+        memoryBox.appendChild(facts);
+      }
+      if (summary) {
+        const sum = document.createElement('div'); sum.className = 'memory-summary'; sum.textContent = summary;
+        memoryBox.appendChild(sum);
+      }
+    }
+    modelSelect.addEventListener('change', async () => {
+      try {
+        const r = await postConfig({ model: modelSelect.value });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { flashBrainNote(d.error || 'could not switch model'); loadSettingsPanel(); }
+        else flashBrainNote('model → ' + d.model);
+      } catch { flashBrainNote('could not reach the server'); }
+    });
+    tempRange.addEventListener('input', () => { tempVal.textContent = tempRange.value; });
+    tempRange.addEventListener('change', async () => {
+      await postConfig({ temperature: Number(tempRange.value) }).catch(() => {});
+      flashBrainNote('temperature → ' + tempRange.value);
+    });
+    personaSave.addEventListener('click', async () => {
+      await postConfig({ persona: personaInput.value }).catch(() => {});
+      flashBrainNote('persona saved');
+    });
+    personaReset.addEventListener('click', async () => {
+      await postConfig({ persona: '' }).catch(() => {});
+      personaInput.value = personaInput.dataset.def || '';
+      flashBrainNote('persona reset to default');
+    });
+    memoryRefresh.addEventListener('click', loadMemoryBox);
+    memoryForget.addEventListener('click', async () => {
+      if (!confirm('Forget everything KAEL durably knows about you? This wipes its profile, summary and the current conversation.')) return;
+      await fetch('/api/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ all: true }) }).catch(() => {});
+      log.innerHTML = '';
+      loadMemoryBox();
+      flashBrainNote('memory wiped');
     });
 
     // ---- backend switch (free local model ⇄ Claude) ----
@@ -1193,6 +1549,18 @@
       if (d && d.provider) setProviderLabel(d.provider);
     })();
 
+    // Restore the on-screen conversation from server memory so it survives reloads
+    // (the transcript is no longer thrown away). Render only — never re-speak.
+    (async () => {
+      const h = await fetchJSONRetry('/api/history', { tries: 3, delay: 800 });
+      if (h && Array.isArray(h.messages)) {
+        for (const m of h.messages) {
+          const b = addMessage(m.role === 'user' ? 'user' : 'kael', m.role === 'user' ? 'YOU' : 'KAEL', m.content);
+          if (m.role === 'assistant') finalizeBubble(b);
+        }
+      }
+    })();
+
     // ---- text fallback ----
     input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 120) + 'px'; });
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitText(); } });
@@ -1212,6 +1580,7 @@
     }
 
     // ---- boot ----
+    Viz.init();            // start the orb visualizer's draw loop
     updateBindingUI();
     setState('idle');
     applyMicMode(false);   // reflect the saved input mode; starts open-mic if selected
