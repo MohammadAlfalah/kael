@@ -30,9 +30,10 @@ fallback when you'd rather type.
   (one to three sentences), since they're read aloud — no walls of text or URLs.
 - **Streaming + sentence-chunked speech** — KAEL starts speaking as soon as the
   first sentence streams in, so there's no long pause.
-- **Optional web search** via the Brave Search API — triggered when you say
-  "search …" or ask for current info. No Brave key? KAEL just answers from
-  knowledge.
+- **Web search** — KAEL searches the web on its own when a question needs current
+  info (news, prices, weather, "who won…", anything time-sensitive), then answers
+  from the results. **Works with no setup** (free DuckDuckGo fallback); add a Brave
+  Search API key for sharper results and higher limits.
 - **Always knows the time** — the current German (`Europe/Berlin`) date and time is
   injected into KAEL's context on every turn, so it's time-aware without you asking
   (greetings, "today/tonight", scheduling) — it just won't recite the clock unless

@@ -443,8 +443,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Decide whether a message should trigger a web search: an explicit "search"
 // request, or wording that implies the user wants current/live information.
 function wantsWebSearch(message) {
-  return /\bsearch\b/i.test(message) ||
-    /\b(latest|current|currently|today|tonight|right now|this week|this month|this year|news|headlines|recent|recently|price|stock|weather|score|released?|launch(?:ed|ing)?|trending|202[5-9])\b/i.test(message);
+  return /\b(search|google|look ?up|look it up|find (me|out))\b/i.test(message) ||
+    /\b(latest|current|currently|today|tonight|right now|this (week|month|year)|news|headlines|recent(ly)?|price|stock|weather|forecast|score|who won|released?|release date|launch(?:ed|ing)?|trending|how much|net worth|how old|202[5-9])\b/i.test(message);
 }
 
 // Strip a leading "search" / "search for" so the query is just the topic.
@@ -487,6 +487,58 @@ async function braveSearch(query, signal) {
     clearTimeout(timer);
     if (signal) signal.removeEventListener('abort', onAbort);
   }
+}
+
+// Strip HTML tags + decode the common entities from a scraped snippet.
+function stripTags(s) {
+  return String(s)
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&#x27;/g, "'").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
+
+// FREE, no-key web search by scraping DuckDuckGo's HTML endpoint. Best-effort:
+// returns [] if DDG blocks or changes its markup. Bounded by a timeout + the turn's
+// abort signal so it can never hang the turn.
+async function duckDuckGoSearch(query, signal) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 8000);
+  const onAbort = () => ac.abort();
+  if (signal) { if (signal.aborted) ac.abort(); else signal.addEventListener('abort', onAbort, { once: true }); }
+  try {
+    const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: ac.signal,
+    });
+    if (!res.ok) throw new Error(`DuckDuckGo returned ${res.status}`);
+    const html = await res.text();
+    const results = [];
+    const re = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+    let m;
+    while ((m = re.exec(html)) && results.length < 5) {
+      const uddg = m[1].match(/[?&]uddg=([^&]+)/);
+      if (!uddg) continue;                       // skip ads — organic links carry a uddg= redirect
+      const title = stripTags(m[2]);
+      if (title) results.push({ title, description: stripTags(m[3]), url: decodeURIComponent(uddg[1]) });
+    }
+    return results;
+  } finally { clearTimeout(timer); if (signal) signal.removeEventListener('abort', onAbort); }
+}
+
+// Pick a search backend: Brave if a key is set (sharper results + higher limits),
+// otherwise the free DuckDuckGo scrape so search works with no setup. Always returns
+// an array (never throws to the caller).
+async function webSearch(query, signal) {
+  if (process.env.BRAVE_API_KEY) {
+    try { const r = await braveSearch(query, signal); if (r && r.length) return r; }
+    catch (err) { console.error('Brave search failed, falling back to DuckDuckGo:', err.message); }
+  }
+  try { return await duckDuckGoSearch(query, signal); }
+  catch (err) { console.error('Web search failed:', err.message); return []; }
 }
 
 // Collapse newlines/control chars and cap length — search snippets are
@@ -660,16 +712,14 @@ app.post('/api/chat', async (req, res) => {
     const query = extractQuery(message);
     try {
       send({ type: 'status', text: `Searching the web for "${query}"…` });
-      const results = await braveSearch(query, controller.signal);
-      if (results === null) {
-        send({ type: 'status', text: 'Web search is not configured — answering from knowledge.' });
-      } else if (results.length > 0) {
+      const results = await webSearch(query, controller.signal);
+      if (results.length > 0) {
         augmented += formatResults(query, results);
       } else {
         send({ type: 'status', text: 'No web results found — answering from knowledge.' });
       }
     } catch (err) {
-      console.error('Brave search failed:', err);
+      console.error('Web search failed:', err);
       send({ type: 'status', text: 'Web search failed — answering from knowledge.' });
     }
   }
