@@ -390,7 +390,7 @@
           <label class="chk"><input type="checkbox" id="trainToggle"> Collect training data <span class="muted-count" id="trainCount"></span></label>
         </div>
         <span class="hint" style="margin-top:4px;"><b>OCR</b> (off): reads exact on-screen text — only helps on screens dense with small text, and adds a couple seconds per glance. <b>Collect training data</b> (off): the one place KAEL <i>saves screenshots</i> — it stores each glance as an image+caption pair in <span class="md-code">data/training/</span> (local, gitignored) to build a fine-tuning dataset for later. Your ✎ corrections re-label them. See <span class="md-code">scripts/finetune/</span>.</span>
-        <span class="hint">KAEL glances at your screen and webcam with a <b>local</b> vision model and remembers what you're doing, so it has real context about your day. Nothing is recorded — frames go only to the model on your PC, no images are ever saved, and nothing leaves the machine. You choose what screen to share; the webcam light blinks on each glance. Pause anytime here or from the browser's “stop sharing” bar. Sensitive screens (banking, passwords) are detected and skipped automatically.</span>
+        <span class="hint">KAEL glances at your screen and webcam with a <b>local</b> vision model and remembers what you're doing, so it has real context about your day. Nothing is recorded — frames go only to the model on your PC, no images are ever saved, and nothing leaves the machine. You choose what screen to share; the webcam light blinks on each glance. Pause anytime here or from the browser's “stop sharing” bar. (Sensitive-screen filtering is OFF — KAEL describes whatever is on screen.)</span>
       </div>
 
       <div class="setting-row">
@@ -405,7 +405,7 @@
           </select>
           <select id="coachModel" title="Proactive brain"></select>
         </div>
-        <span class="hint">KAEL speaks up <b>on its own</b> — greetings, observations, check-ins, encouragement — based on what it sees you doing, not only when you talk to it. Set a <b>focus</b> (optional, or just say <i>“I'm working on …”</i>) and it also keeps you on track (nudges drift, suggests breaks, offers help when you're stuck). <b>Needs awareness on.</b> The <b>brain</b> reasons over your activity timeline — the small local model is too weak to judge this, so it defaults to your <b>gpt-oss cloud</b> model, meaning your activity <i>summaries</i> (text lines, never screenshots) go to it for the decision. Pick a local model for full privacy (but it'll rarely speak).</span>
+        <span class="hint">KAEL speaks up <b>on its own</b> — greetings, observations, check-ins, encouragement — based on what it sees you doing, not only when you talk to it. It <b>picks up your focus automatically</b> from what you tell it during the day (just say or type <i>“I'm gonna work on the kael project”</i> and it sets the focus itself) — or type one in the box above. With a focus, it also keeps you on track (nudges drift, suggests breaks, offers help when you're stuck). <b>Needs awareness on.</b> The <b>brain</b> reasons over your activity timeline (and, for auto-focus, your message) — the small local model is too weak to judge this, so it defaults to your <b>gpt-oss cloud</b> model, meaning that text goes to it for the decision. Pick a local model for full privacy (but it'll rarely speak).</span>
       </div>
 
       <div class="row" style="justify-content:flex-end;">

@@ -618,6 +618,8 @@ app.post('/api/chat', async (req, res) => {
   if (!message) {
     return res.status(400).json({ error: 'Message is required.' });
   }
+  // auto-pick up the day's focus from what the user says (fire-and-forget, never blocks the reply)
+  maybeExtractFocus(message);
 
   // INTERRUPT any in-flight turn — the newest request wins. Abort it and wait
   // (bounded) for it to release, so the old turn's memory commit settles and a
@@ -896,13 +898,11 @@ app.post('/api/config', async (req, res) => {
 // Prompt template. {LEARNED_PROFILE} is replaced per-call with what KAEL has learned
 // about THIS user (their apps/habits + past corrections), so the same local model
 // gets steadily more accurate for them over time — in-context personalization, not
-// weight training. (This wording is refined by the design pass; keep the placeholder
-// and the exact SENSITIVE rule.)
+// weight training. NOTE: the owner deliberately turned OFF sensitive-screen redaction
+// (full control), so the model just describes whatever is on screen.
 const AWARENESS_PROMPT = `You are KAEL's ambient-awareness vision module. IMAGE 1 is the user's computer SCREEN. IMAGE 2, if present, is their WEBCAM (their face/desk), not part of the screen.
 
-STEP 1 — SAFETY CHECK FIRST. Look at the screen. If it PROMINENTLY shows any of: a password or login field with a password visible, online banking or an account balance, a full payment-card or bank-account number, or a private medical or legal document — reply with EXACTLY the single word SENSITIVE and nothing else (no punctuation, no other words). A normal app that merely COULD hold private data (a closed email tab, a code editor, a logged-in site with nothing sensitive shown) is NOT sensitive — only redact when the sensitive data is actually visible right now.
-
-STEP 2 — Otherwise, write ONE plain sentence, MAX 22 WORDS, naming these in order and joined naturally, then STOP:
+Write ONE plain sentence, MAX 22 WORDS, naming these in order and joined naturally, then STOP:
 1) APP — the foreground app or website by its real name, read from the title bar, tab, or window chrome (e.g. VS Code, Edge, Chrome, YouTube, Gmail, Word, Discord, a terminal).
 2) CONTENT — the specific thing on screen: the video title or topic, the file or project name, the document or page heading, the channel or person. Read it from large on-screen text.
 3) TASK — the verb for what they are doing (coding, watching, reading, writing, editing, browsing, debugging, in a call, messaging).
@@ -915,7 +915,7 @@ RULES:
 FORMAT EXAMPLES (copy the STYLE only — NEVER copy these words or topics; describe what is ACTUALLY on the screen): "Coding in VS Code, editing a JavaScript file, focused at the desk." / "Watching a video on YouTube in Edge, present and attentive." / "Reading email in Gmail." / "At the Windows desktop with no active app."
 
 {SCREEN_TEXT}{LEARNED_PROFILE}
-Treat the profile above as true about THIS user and let it override your first guess. Output now: either SENSITIVE, or one sentence (max 22 words). Nothing else.`;
+Treat the profile above as true about THIS user and let it override your first guess. Output now: one sentence (max 22 words). Nothing else.`;
 
 // Render the learned profile (durable facts + recent corrections) for prompt injection.
 function learnedProfileText() {
@@ -1030,6 +1030,28 @@ Reply with EXACTLY the single word QUIET to stay silent, OR ONE warm, specific s
   return clean;
 }
 
+// Auto-focus: when the user mentions a plan in chat ("I'm gonna work on X"), pull the
+// focus out of it and set it, so they never have to set it manually. A cheap keyword
+// pre-filter limits how often the (cloud) extraction model is called.
+const PLAN_HINT = /\b(work(ing)? on|focus|gonna|going to|i'?ll|today|tonight|this (morning|afternoon|evening)|plan|study|studying|build|fix|fixing|finish|grind|need to|let'?s (do|work)|tackle|get (started|going) on|switch to)\b/i;
+async function maybeExtractFocus(message) {
+  if (!coaching.enabled || !message) return;
+  const m = String(message).trim();
+  if (m.length < 4 || m.length > 400 || !PLAN_HINT.test(m)) return;
+  try {
+    const prompt = `The user just told their assistant: "${m}".\nIf this clearly states what they are working on, planning to do, or want to focus on (now or today), reply with a SHORT focus phrase under 8 words (e.g. "the kael project", "studying for the math exam"). If it does NOT clearly state a task/plan/focus (small talk, questions, thanks), reply with exactly: NONE.\nReply with ONLY the phrase or NONE.`;
+    const out = await localChat([{ role: 'user', content: prompt }],
+      { model: coaching.model, think: false, num_predict: 500, temperature: 0.1, timeout: 30000 });
+    const focus = out.replace(/^["'\s]+|["'\s]+$/g, '');
+    if (focus && focus.replace(/[^A-Za-z]/g, '').toUpperCase() !== 'NONE' && focus.length <= 80) {
+      coaching.goal = focus;
+      coaching.lastNudgeAt = 0;   // a fresh focus → KAEL may speak to it soon
+      saveConfig();
+      console.log(`Auto-focus from chat: "${focus}"`);
+    }
+  } catch { /* extraction is best-effort */ }
+}
+
 // Installed models that look like vision models, for the picker (falls back to all).
 async function visionModels() {
   const all = await installedModels();
@@ -1133,27 +1155,20 @@ app.post('/api/awareness/observe', async (req, res) => {
   try {
     const screenText = typeof req.body?.screenText === 'string' ? req.body.screenText : '';
     let note = await describeActivity(images, screenText);
-    // Redaction (fail-safe): if the model flags the screen as sensitive — even with
-    // extra words — drop the description entirely. As a backstop against the model
-    // NOT flagging it, scrub long digit runs (account/card numbers) from any stored
-    // note and cap its length, so the on-disk log never accretes raw numbers.
-    const sensitive = /\bSENSITIVE\b/.test(note.toUpperCase());
-    const trainCaption = sensitive ? '' : note.slice(0, 200);   // un-scrubbed, for the fine-tune dataset
-    if (sensitive) note = '(private screen — not recorded)';
-    else note = note.replace(/\d{4,}/g, '••••').slice(0, 200);
+    note = note.slice(0, 300);   // sanity length cap only — redaction is OFF (owner wants full control)
     if (note) {
       awareness.latestNote = note;
       awareness.latestAt = Date.now();
       await appendFile(AWARENESS_FILE,
-        JSON.stringify({ at: new Date().toISOString(), note, sensitive }) + '\n', 'utf8').catch(() => {});
+        JSON.stringify({ at: new Date().toISOString(), note }) + '\n', 'utf8').catch(() => {});
       // opt-in: save the (screenshot, caption) pair for the future fine-tune
-      if (awareness.collectTraining && !sensitive && screenB64 && trainCaption) saveTrainingSample(screenB64, trainCaption);
+      if (awareness.collectTraining && screenB64) saveTrainingSample(screenB64, note);
     }
-    // proactive coaching rides along on the glance — null unless KAEL has something
+    // proactive presence rides along on the glance — null unless KAEL has something
     // worth saying right now (and isn't in its cooldown)
     let coach = null;
-    if (!sensitive) { try { coach = await coachCheck(); } catch { /* coaching never breaks a glance */ } }
-    res.json({ note, at: awareness.latestAt, sensitive, coach });
+    try { coach = await coachCheck(); } catch { /* proactive voice never breaks a glance */ }
+    res.json({ note, at: awareness.latestAt, coach });
   } catch (err) {
     res.status(502).json({ error: `Vision model failed: ${err.message}` });
   } finally {
