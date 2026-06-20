@@ -437,9 +437,6 @@
       const labels = { idle: holdHint(), listening: 'listening…', thinking: 'thinking…', speaking: 'speaking…' };
       statusEl.textContent = labels[s] || '';
       if (s !== 'listening') interimEl.textContent = '';
-      // mic visualizer lives only while listening, so the OS mic indicator
-      // tracks the listening state instead of staying on continuously.
-      if (s === 'listening') Viz.startMic(); else Viz.stopMic();
     }
     function holdHint() {
       if (!canListen) return 'type to talk to KAEL';
@@ -951,15 +948,16 @@
     }
 
     // ---- Audio-reactive orb visualizer ----------------------------------
-    // A ring of radial bars around the orb, driven by a Web Audio AnalyserNode:
-    // the mic while you talk, and premium TTS while KAEL speaks. When no signal
-    // is tappable (the free browser voice can't be observed by Web Audio), it
-    // animates a gentle synthetic wave so the orb still feels alive. Every step
-    // is guarded — if AudioContext, <canvas>, or mic access is missing, the CSS
-    // orb animations simply carry on by themselves.
+    // A ring of radial bars around the orb. While KAEL speaks with the premium
+    // voice, a Web Audio AnalyserNode taps that audio so the bars react to its
+    // real waveform. Otherwise (while you talk, or with the free browser voice
+    // that Web Audio can't observe) it animates a gentle synthetic wave so the
+    // orb still feels alive. It deliberately never opens its own mic stream —
+    // that would fight the Web Speech recognizer for the device. Every step is
+    // guarded — if AudioContext or <canvas> is missing, the CSS orb animation
+    // simply carries on by itself.
     const Viz = {
-      canvas: null, g: null, analyser: null, freq: null,
-      micStream: null, micSource: null, micStarting: false, raf: 0, level: 0,
+      canvas: null, g: null, analyser: null, freq: null, raf: 0, level: 0,
 
       init() {
         this.canvas = document.getElementById('orbViz');
@@ -988,8 +986,6 @@
         } catch { this.analyser = null; }
         return this.analyser;
       },
-      tap(node) { const an = this.ensureAnalyser(); if (an && node) { try { node.connect(an); } catch {} } },
-
       // Route a premium-TTS <audio> element through the analyser so the orb
       // reacts to KAEL's actual voice. Only when the context is running; on any
       // failure the element just plays normally (no visualization).
@@ -1004,26 +1000,11 @@
         } catch { return null; /* already tapped / unsupported — plays normally */ }
       },
 
-      // Mic visualization: a getUserMedia stream that lives only while listening,
-      // so the OS mic indicator tracks the listening state (never always-on).
-      async startMic() {
-        if (this.micSource || this.micStarting || !audioCtx) return;
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
-        this.micStarting = true;               // guard against overlapping starts during a flap
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          // bail if we stopped listening, or another start already won, while awaiting
-          if (state !== 'listening' || this.micSource) { stream.getTracks().forEach((t) => t.stop()); return; }
-          this.micStream = stream;
-          this.micSource = audioCtx.createMediaStreamSource(stream);
-          this.tap(this.micSource);            // mic → analyser only (never to destination → no echo)
-        } catch { /* denied / unavailable → synthetic wave only */ }
-        finally { this.micStarting = false; }
-      },
-      stopMic() {
-        if (this.micSource) { try { this.micSource.disconnect(); } catch {} this.micSource = null; }
-        if (this.micStream) { try { this.micStream.getTracks().forEach((t) => t.stop()); } catch {} this.micStream = null; }
-      },
+      // NOTE: the orb does NOT tap the microphone. Push-to-talk / open-mic use the
+      // Web Speech API (SpeechRecognition), which needs the mic to itself — opening
+      // a parallel getUserMedia stream here starved the recognizer and swallowed the
+      // whole utterance. So while listening the orb animates from a synthetic wave;
+      // real audio reactivity is reserved for KAEL's premium-TTS voice (tapElement).
 
       draw(ts) {
         const g = this.g; if (!g) return;
