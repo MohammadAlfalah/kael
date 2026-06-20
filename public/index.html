@@ -172,6 +172,9 @@
     .aware-status .stamp { color: var(--muted); font-size: 11.5px; }
     .aware-fix { margin-top: 6px; background: transparent; border: 1px solid var(--border); color: var(--muted); font-size: 11px; padding: 3px 9px; border-radius: 999px; cursor: pointer; }
     .aware-fix:hover { color: var(--accent); border-color: rgba(94,234,212,.4); }
+    .chk { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text); cursor: pointer; user-select: none; }
+    .chk input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+    .muted-count { color: var(--muted); font-size: 11.5px; }
     .coach-goal { width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font: 13px/1.4 var(--sans); padding: 9px 11px; }
     .coach-goal:focus { outline: none; border-color: var(--accent); }
     .aware-log { display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; margin-top: 8px; }
@@ -382,6 +385,11 @@
           <select id="awareModel" title="Local vision model"></select>
         </div>
         <div class="aware-log" id="awareLog"></div>
+        <div class="row" style="margin-top:8px; gap:16px; flex-wrap:wrap;">
+          <label class="chk"><input type="checkbox" id="ocrToggle"> Read screen text (OCR)</label>
+          <label class="chk"><input type="checkbox" id="trainToggle"> Collect training data <span class="muted-count" id="trainCount"></span></label>
+        </div>
+        <span class="hint" style="margin-top:4px;"><b>OCR</b> (off): reads exact on-screen text — only helps on screens dense with small text, and adds a couple seconds per glance. <b>Collect training data</b> (off): the one place KAEL <i>saves screenshots</i> — it stores each glance as an image+caption pair in <span class="md-code">data/training/</span> (local, gitignored) to build a fine-tuning dataset for later. Your ✎ corrections re-label them. See <span class="md-code">scripts/finetune/</span>.</span>
         <span class="hint">KAEL glances at your screen and webcam with a <b>local</b> vision model and remembers what you're doing, so it has real context about your day. Nothing is recorded — frames go only to the model on your PC, no images are ever saved, and nothing leaves the machine. You choose what screen to share; the webcam light blinks on each glance. Pause anytime here or from the browser's “stop sharing” bar. Sensitive screens (banking, passwords) are detected and skipped automatically.</span>
       </div>
 
@@ -449,6 +457,9 @@
     const awareInterval = document.getElementById('awareInterval');
     const awareModel = document.getElementById('awareModel');
     const awareLog = document.getElementById('awareLog');
+    const ocrToggle = document.getElementById('ocrToggle');
+    const trainToggle = document.getElementById('trainToggle');
+    const trainCount = document.getElementById('trainCount');
     const coachTag = document.getElementById('coachTag');
     const coachGoal = document.getElementById('coachGoal');
     const coachToggle = document.getElementById('coachToggle');
@@ -1624,6 +1635,38 @@
       setAwareBadge(on ? 'on' : 'off');
     }
 
+    function loadScript(src) {
+      return new Promise((resolve, reject) => {
+        const s = document.createElement('script'); s.src = src; s.async = true;
+        s.onload = resolve; s.onerror = reject; document.head.appendChild(s);
+      });
+    }
+    // Local OCR (Tesseract.js, WASM) — reads the EXACT text off the screen frame so
+    // the vision model names apps/titles/files precisely instead of guessing. Fully
+    // local (the lib + language data load once from a CDN, then run in-browser).
+    // Best-effort: lazy-loaded, and any failure just falls back to image-only.
+    const OCR = {
+      worker: null, loading: null,
+      async ensure() {
+        if (this.worker) return this.worker;
+        if (!this.loading) {
+          this.loading = (async () => {
+            if (!window.Tesseract) await loadScript('https://unpkg.com/tesseract.js@5.1.1/dist/tesseract.min.js');
+            this.worker = await Tesseract.createWorker('eng');
+            return this.worker;
+          })().catch(() => { this.loading = null; return null; });
+        }
+        return this.loading;
+      },
+      async read(imageDataUrl) {
+        try {
+          const w = await this.ensure(); if (!w) return '';
+          const { data } = await w.recognize(imageDataUrl);
+          return (data.text || '').replace(/\n{2,}/g, '\n').trim().slice(0, 2000);
+        } catch { return ''; }
+      },
+    };
+
     const Awareness = {
       enabled: false, intervalMs: 300000, model: '',
       stream: null, video: null, timer: null, busy: false, firstGlance: true, startSeq: 0,
@@ -1705,15 +1748,22 @@
         if (!screen) return;
         this.busy = true;
         setAwareStatus(this.firstGlance ? 'looking… (warming up the vision model — up to a minute the first time)' : 'looking…');
-        const webcam = await this.grabWebcam();   // best-effort
+        // OCR is opt-in (off by default): the vision model already reads screens well,
+        // so OCR is only worth its latency on screens dense with small text.
+        let screenText = '';
+        try { if (localStorage.getItem('kael.ocr') === '1') screenText = await OCR.read(screen); } catch {}
+        const webcam = await this.grabWebcam();        // best-effort
         // a hung request must never wedge `busy` (that would silently kill awareness
         // while the badge still says "watching") — abort after 90s so the timer recovers
         const ctrl = new AbortController();
         const to = setTimeout(() => ctrl.abort(), 90000);
         try {
+          const body = { screen };
+          if (screenText) body.screenText = screenText;
+          if (webcam) body.webcam = webcam;
           const r = await fetch('/api/awareness/observe', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(webcam ? { screen, webcam } : { screen }), signal: ctrl.signal,
+            body: JSON.stringify(body), signal: ctrl.signal,
           });
           if (r.ok) {
             const d = await r.json();
@@ -1748,6 +1798,9 @@
           const o = document.createElement('option'); o.value = m; o.textContent = m; awareModel.appendChild(o);
         });
         awareModel.value = (d.models || []).find((m) => m === d.model || m.startsWith(d.model + ':')) || d.model;
+        ocrToggle.checked = (() => { try { return localStorage.getItem('kael.ocr') === '1'; } catch { return false; } })();
+        trainToggle.checked = !!d.collectTraining;
+        trainCount.textContent = d.trainingCount ? `(${d.trainingCount} saved)` : '';
         // The server remembers "enabled", but the browser must re-grant screen share
         // after a reload — so show "Resume", don't silently auto-start capture.
         if (!Awareness.enabled) {
@@ -1772,6 +1825,14 @@
       const r = await fetch('/api/awareness', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: awareModel.value }) }).catch(() => null);
       if (r && r.ok) { Awareness.model = awareModel.value; flashBrainNote('vision model → ' + awareModel.value); }
       else { const e = r ? await r.json().catch(() => ({})) : {}; flashBrainNote((e && e.error) || 'could not switch vision model'); loadAwarenessPanel(); }
+    });
+    ocrToggle.addEventListener('change', () => {
+      try { localStorage.setItem('kael.ocr', ocrToggle.checked ? '1' : '0'); } catch {}
+      flashBrainNote(ocrToggle.checked ? 'screen-text OCR on (slower glances)' : 'OCR off');
+    });
+    trainToggle.addEventListener('change', async () => {
+      await fetch('/api/awareness', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ collectTraining: trainToggle.checked }) }).catch(() => {});
+      flashBrainNote(trainToggle.checked ? 'saving training data (screenshots → data/training)' : 'training collection off');
     });
 
     // ---- Proactive coaching (KAEL speaks up when you drift / grind / get stuck) ----

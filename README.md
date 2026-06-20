@@ -62,6 +62,14 @@ fallback when you'd rather type.
   focus reliably), so it defaults to a stronger model — note that a cloud coach model
   sees your activity **summaries** (text lines, never screenshots); switch it to a
   local model in Settings for full privacy.
+- **Sharper eyes & a path to real fine-tuning (optional)** — an opt-in **OCR**
+  toggle feeds the exact on-screen text to the vision model for small-text-heavy
+  screens, and an opt-in **"collect training data"** mode saves `(screenshot, caption)`
+  pairs (your ✎ corrections re-label them) into `data/training/` to build a dataset
+  for an eventual fine-tune. The full, researched fine-tuning pipeline + scripts live
+  in [`scripts/finetune/`](scripts/finetune/) — with an honest "is it even worth it
+  yet?" guide (usually: the in-context learned profile beats fine-tuning until you
+  have 300+ labeled screens).
 - **Control panel** — ⚙ Settings also lets you switch the local model, tune the
   reply temperature, edit KAEL's persona, and view/edit what it remembers about you.
 - **On-screen extras** — replies render markdown, each message has Copy / Replay /

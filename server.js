@@ -98,9 +98,11 @@ let awareness = {
   enabled: false,
   intervalMs: 300000,            // ~5 min between glances (the browser drives the cadence)
   model: AWARENESS_MODEL_DEFAULT,
+  collectTraining: false,        // opt-in: SAVE (screenshot, caption) pairs to build a fine-tune dataset
   latestNote: '',
   latestAt: null,
 };
+let lastTrainingFile = '';       // most recent saved training image (so a correction can re-label it)
 let observing = false;           // a vision call is in flight — drop overlapping observes
 
 // What KAEL has learned about THIS user, injected into every awareness glance so the
@@ -139,6 +141,9 @@ const MEMORY_FILE = path.join(DATA_DIR, 'memory.json');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');      // persona / temperature / model overrides
 const AWARENESS_FILE = path.join(DATA_DIR, 'awareness.jsonl'); // ambient activity notes (gitignored)
 const AWARENESS_LEARNED_FILE = path.join(DATA_DIR, 'awareness-learned.json'); // personalized facts + corrections
+const TRAINING_DIR = path.join(DATA_DIR, 'training');                          // opt-in fine-tune dataset (gitignored)
+const TRAINING_IMAGES = path.join(TRAINING_DIR, 'images');
+const TRAINING_LABELS = path.join(TRAINING_DIR, 'labels.jsonl');
 const TRANSCRIPT_FILE = path.join(DATA_DIR, 'transcript.jsonl');
 const LISTEN_FILE = path.join(DATA_DIR, 'listening.jsonl');  // "listening mode" capture log
 // KAEL always knows the current German time (Varyn's timezone). Injected into the
@@ -239,6 +244,7 @@ async function loadConfig() {
         awareness.intervalMs = Math.min(Math.max(data.awareness.intervalMs, AWARENESS_MIN_MS), AWARENESS_MAX_MS);
       }
       if (typeof data.awareness.model === 'string' && data.awareness.model) awareness.model = data.awareness.model;
+      awareness.collectTraining = data.awareness.collectTraining === true;
     }
     if (data.coaching && typeof data.coaching === 'object') {
       coaching.enabled = data.coaching.enabled === true;
@@ -260,7 +266,7 @@ function saveConfig() {
       persona: sessionPersona,
       temperature: sessionTemperature,
       model: OLLAMA_MODEL,
-      awareness: { enabled: awareness.enabled, intervalMs: awareness.intervalMs, model: awareness.model },
+      awareness: { enabled: awareness.enabled, intervalMs: awareness.intervalMs, model: awareness.model, collectTraining: awareness.collectTraining },
       coaching: { enabled: coaching.enabled, goal: coaching.goal, intensity: coaching.intensity, model: coaching.model },
     }, null, 2);
   savingConfig = savingConfig
@@ -908,7 +914,7 @@ RULES:
 - Output the sentence only. No labels, no list, no JSON, no markdown, no preamble, no quotes, no trailing note.
 FORMAT EXAMPLES (copy the STYLE only — NEVER copy these words or topics; describe what is ACTUALLY on the screen): "Coding in VS Code, editing a JavaScript file, focused at the desk." / "Watching a video on YouTube in Edge, present and attentive." / "Reading email in Gmail." / "At the Windows desktop with no active app."
 
-{LEARNED_PROFILE}
+{SCREEN_TEXT}{LEARNED_PROFILE}
 Treat the profile above as true about THIS user and let it override your first guess. Output now: either SENSITIVE, or one sentence (max 22 words). Nothing else.`;
 
 // Render the learned profile (durable facts + recent corrections) for prompt injection.
@@ -925,8 +931,15 @@ function learnedProfileText() {
   return parts.length ? parts.join('\n') + '\n' : '';
 }
 
-async function describeActivity(images) {
-  const prompt = AWARENESS_PROMPT.replace('{LEARNED_PROFILE}', learnedProfileText());
+async function describeActivity(images, screenText) {
+  // OCR text (the EXACT words on screen) grounds the model so it reads app names,
+  // titles and filenames precisely instead of guessing from pixels.
+  const ocr = (typeof screenText === 'string' && screenText.trim())
+    ? `Exact text read from the screen by OCR (use it to name the app, title, file or page precisely; ignore menus/noise, pick what's relevant):\n"""\n${screenText.trim().slice(0, 2000)}\n"""\n\n`
+    : '';
+  const prompt = AWARENESS_PROMPT
+    .replace('{SCREEN_TEXT}', ocr)
+    .replace('{LEARNED_PROFILE}', learnedProfileText());
   const r = await fetch(`${OLLAMA_URL}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1014,6 +1027,42 @@ async function visionModels() {
   return vis.length ? vis : all;
 }
 
+// ---- Opt-in training-data collection (for a future fine-tune) ----------------
+// When ON, each non-sensitive glance saves the screenshot + the model's caption as an
+// (image, label) pair under data/training/ (gitignored). Corrections re-label the most
+// recent sample. This is the dataset scripts/finetune/ consumes. OFF by default — it
+// is the ONE place KAEL saves screen images, so it's a deliberate opt-in.
+async function saveTrainingSample(screenB64, caption) {
+  if (!screenB64 || !caption) return;
+  try {
+    await mkdir(TRAINING_IMAGES, { recursive: true });
+    const file = `${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`;
+    await writeFile(path.join(TRAINING_IMAGES, file), Buffer.from(screenB64, 'base64'));
+    await appendFile(TRAINING_LABELS, JSON.stringify({ file, caption, at: new Date().toISOString() }) + '\n', 'utf8');
+    lastTrainingFile = file;
+  } catch (err) { console.error('Failed to save training sample:', err.message); }
+}
+// Re-label the most recent saved sample when the user corrects a note.
+async function updateTrainingLabel(file, caption) {
+  if (!file || !caption) return;
+  try {
+    const lines = (await readFile(TRAINING_LABELS, 'utf8')).split('\n').filter(Boolean);
+    let changed = false;
+    const out = lines.map((l) => {
+      try { const o = JSON.parse(l); if (o.file === file) { o.caption = caption; o.corrected = true; changed = true; return JSON.stringify(o); } } catch {}
+      return l;
+    });
+    if (changed) {   // atomic: temp + rename, so a concurrent read never sees a half-written file
+      await writeFile(`${TRAINING_LABELS}.tmp`, out.join('\n') + '\n', 'utf8');
+      await rename(`${TRAINING_LABELS}.tmp`, TRAINING_LABELS);
+    }
+  } catch { /* no labels file yet */ }
+}
+async function trainingCount() {
+  try { return (await readFile(TRAINING_LABELS, 'utf8')).split('\n').filter(Boolean).length; }
+  catch { return 0; }
+}
+
 app.get('/api/awareness', async (_req, res) => {
   res.json({
     enabled: awareness.enabled,
@@ -1022,6 +1071,8 @@ app.get('/api/awareness', async (_req, res) => {
     models: await visionModels(),
     latestNote: awareness.latestNote,
     latestAt: awareness.latestAt,
+    collectTraining: awareness.collectTraining,
+    trainingCount: await trainingCount(),
   });
 });
 
@@ -1044,10 +1095,11 @@ app.post('/api/awareness', async (req, res) => {
     awareness.model = b.model;
     changed = true;
   }
+  if ('collectTraining' in b) { awareness.collectTraining = b.collectTraining === true; changed = true; }
   if (changed) saveConfig();
   // turning it off forgets the current activity so KAEL stops referencing it
   if (!awareness.enabled) { awareness.latestNote = ''; awareness.latestAt = null; }
-  res.json({ enabled: awareness.enabled, intervalMs: awareness.intervalMs, model: awareness.model });
+  res.json({ enabled: awareness.enabled, intervalMs: awareness.intervalMs, model: awareness.model, collectTraining: awareness.collectTraining });
 });
 
 // The browser posts a fresh screen (+ optional webcam) frame; the local vision
@@ -1062,17 +1114,20 @@ app.post('/api/awareness/observe', async (req, res) => {
   if (observing) return res.status(202).json({ skipped: 'busy' });            // a glance is already running
   if (Date.now() - lastObserveAt < AWARENESS_MIN_MS) return res.status(202).json({ skipped: 'throttled' });
   const strip = (s) => (typeof s === 'string' ? s.replace(/^data:[^,]+,/, '') : '');
-  const images = [strip(req.body?.screen), strip(req.body?.webcam)].filter(Boolean);
+  const screenB64 = strip(req.body?.screen);
+  const images = [screenB64, strip(req.body?.webcam)].filter(Boolean);
   if (!images.length) return res.status(400).json({ error: 'Need a screen or webcam frame.' });
   observing = true;
   lastObserveAt = Date.now();
   try {
-    let note = await describeActivity(images);
+    const screenText = typeof req.body?.screenText === 'string' ? req.body.screenText : '';
+    let note = await describeActivity(images, screenText);
     // Redaction (fail-safe): if the model flags the screen as sensitive — even with
     // extra words — drop the description entirely. As a backstop against the model
     // NOT flagging it, scrub long digit runs (account/card numbers) from any stored
     // note and cap its length, so the on-disk log never accretes raw numbers.
     const sensitive = /\bSENSITIVE\b/.test(note.toUpperCase());
+    const trainCaption = sensitive ? '' : note.slice(0, 200);   // un-scrubbed, for the fine-tune dataset
     if (sensitive) note = '(private screen — not recorded)';
     else note = note.replace(/\d{4,}/g, '••••').slice(0, 200);
     if (note) {
@@ -1080,6 +1135,8 @@ app.post('/api/awareness/observe', async (req, res) => {
       awareness.latestAt = Date.now();
       await appendFile(AWARENESS_FILE,
         JSON.stringify({ at: new Date().toISOString(), note, sensitive }) + '\n', 'utf8').catch(() => {});
+      // opt-in: save the (screenshot, caption) pair for the future fine-tune
+      if (awareness.collectTraining && !sensitive && screenB64 && trainCaption) saveTrainingSample(screenB64, trainCaption);
     }
     // proactive coaching rides along on the glance — null unless KAEL has something
     // worth saying right now (and isn't in its cooldown)
@@ -1163,6 +1220,8 @@ app.post('/api/awareness/correct', async (req, res) => {
   awareness.latestNote = actually;
   awareness.latestAt = Date.now();
   await saveLearned();
+  // if we just saved this glance as a training sample, fix its label to the truth
+  if (awareness.collectTraining && lastTrainingFile) await updateTrainingLabel(lastTrainingFile, actually);
   res.json({ ok: true, corrections: learned.corrections.length });
 });
 
