@@ -177,6 +177,24 @@
     .muted-count { color: var(--muted); font-size: 11.5px; }
     .coach-goal { width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font: 13px/1.4 var(--sans); padding: 9px 11px; }
     .coach-goal:focus { outline: none; border-color: var(--accent); }
+    /* tasks */
+    .task-list { display: flex; flex-direction: column; gap: 6px; max-height: 300px; overflow-y: auto; }
+    .task { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+    .task-row { display: flex; align-items: flex-start; gap: 9px; }
+    .task-row input.task-done { margin-top: 2px; accent-color: var(--accent); width: 15px; height: 15px; flex: 0 0 auto; cursor: pointer; }
+    .task-text { flex: 1; font-size: 13px; line-height: 1.4; }
+    .task.done .task-text { text-decoration: line-through; color: var(--muted); }
+    .task-badge { flex: 0 0 auto; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; padding: 2px 6px; border-radius: 999px; }
+    .prio-high { color: var(--danger); border: 1px solid rgba(255,107,107,.4); }
+    .prio-medium { color: var(--amber); border: 1px solid rgba(245,177,76,.4); }
+    .prio-low { color: var(--muted); border: 1px solid var(--border); }
+    .task-due { flex: 0 0 auto; font-size: 10.5px; color: var(--amber); align-self: center; }
+    .task-act { flex: 0 0 auto; background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 1px 5px; border-radius: 5px; }
+    .task-act:hover { color: var(--accent); }
+    .task-steps { margin: 6px 0 0 24px; display: flex; flex-direction: column; gap: 3px; }
+    .task-step { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; color: var(--muted); line-height: 1.4; cursor: pointer; }
+    .task-step input { margin-top: 1px; accent-color: var(--accent); width: 13px; height: 13px; flex: 0 0 auto; }
+    .task-step.done { text-decoration: line-through; opacity: .65; }
     .aware-log { display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; margin-top: 8px; }
     .aware-log-item { font-size: 12px; line-height: 1.45; color: var(--muted); padding: 4px 8px; border-left: 2px solid var(--border); }
     .aware-log-item .t { color: var(--accent); opacity: .7; font-size: 10.5px; margin-right: 6px; }
@@ -408,6 +426,17 @@
         <span class="hint">KAEL speaks up <b>on its own</b> — greetings, observations, check-ins, encouragement — based on what it sees you doing, not only when you talk to it. It <b>picks up your focus automatically</b> from what you tell it during the day (just say or type <i>“I'm gonna work on the kael project”</i> and it sets the focus itself) — or type one in the box above. With a focus, it also keeps you on track (nudges drift, suggests breaks, offers help when you're stuck). <b>Needs awareness on.</b> The <b>brain</b> reasons over your activity timeline (and, for auto-focus, your message) — the small local model is too weak to judge this, so it defaults to your <b>gpt-oss cloud</b> model, meaning that text goes to it for the decision. Pick a local model for full privacy (but it'll rarely speak).</span>
       </div>
 
+      <div class="setting-row">
+        <span class="label">Tasks <span class="muted-count" id="taskCount"></span></span>
+        <div class="task-list" id="taskList"></div>
+        <div class="row" style="margin-top:8px;">
+          <input id="taskInput" type="text" class="coach-goal" placeholder="Add a task…" maxlength="200" style="flex:1;">
+          <button class="mini-btn" id="taskAdd">Add</button>
+          <button class="mini-btn" id="taskPrioritize">Prioritize</button>
+        </div>
+        <span class="hint">KAEL captures tasks <b>automatically</b> when you mention them in chat (<i>“I need to finish X by Friday”</i>), prioritizes them by urgency &amp; deadline, and can <b>break</b> any task into steps. Tick to complete a task or a step; ask KAEL <i>“what should I work on?”</i> anytime and it answers from this list.</span>
+      </div>
+
       <div class="row" style="justify-content:flex-end;">
         <button class="mini-btn" id="settingsClose">Done</button>
       </div>
@@ -465,6 +494,11 @@
     const coachToggle = document.getElementById('coachToggle');
     const coachIntensity = document.getElementById('coachIntensity');
     const coachModel = document.getElementById('coachModel');
+    const taskList = document.getElementById('taskList');
+    const taskCount = document.getElementById('taskCount');
+    const taskInput = document.getElementById('taskInput');
+    const taskAdd = document.getElementById('taskAdd');
+    const taskPrioritize = document.getElementById('taskPrioritize');
 
     // ---- feature detection ----
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1520,6 +1554,7 @@
       loadMemoryBox();
       loadAwarenessPanel();
       loadCoachPanel();
+      loadTasksPanel();
     }
     async function loadMemoryBox() {
       let mem;
@@ -1885,6 +1920,63 @@
       const r = await postCoach({ model: coachModel.value }).catch(() => null);
       if (r && r.ok) flashBrainNote('coach brain → ' + coachModel.value);
       else { const e = r ? await r.json().catch(() => ({})) : {}; flashBrainNote((e && e.error) || 'could not switch coach brain'); loadCoachPanel(); }
+    });
+
+    // ---- Task manager (auto-captured from chat; prioritized + broken into steps) ----
+    function taskApi(path, body) {
+      return fetch('/api/tasks' + path, {
+        method: body === undefined ? 'GET' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    }
+    function renderTasks(list) {
+      taskList.innerHTML = '';
+      taskCount.textContent = list.length ? `(${list.filter((t) => !t.done).length} open)` : '';
+      if (!list.length) { taskList.innerHTML = '<div class="memory-empty">No tasks yet — mention one in chat, or add one below.</div>'; return; }
+      for (const t of list) {
+        const el = document.createElement('div'); el.className = 'task' + (t.done ? ' done' : '');
+        const row = document.createElement('div'); row.className = 'task-row';
+        const chk = document.createElement('input'); chk.type = 'checkbox'; chk.className = 'task-done'; chk.checked = !!t.done;
+        chk.addEventListener('change', async () => { await taskApi('/' + t.id, { done: chk.checked }); loadTasksPanel(); });
+        const text = document.createElement('span'); text.className = 'task-text'; text.textContent = t.text;
+        const badge = document.createElement('span'); badge.className = 'task-badge prio-' + t.priority; badge.textContent = t.priority;
+        row.append(chk, text, badge);
+        if (t.deadline) { const d = document.createElement('span'); d.className = 'task-due'; d.textContent = t.deadline; row.appendChild(d); }
+        const bd = document.createElement('button'); bd.className = 'task-act'; bd.title = 'Break into steps'; bd.textContent = (t.steps && t.steps.length) ? '⟳' : '☰';
+        bd.addEventListener('click', async () => { bd.textContent = '…'; await taskApi('/' + t.id + '/breakdown', {}); loadTasksPanel(); });
+        const del = document.createElement('button'); del.className = 'task-act'; del.title = 'Delete'; del.textContent = '✕';
+        del.addEventListener('click', async () => { await fetch('/api/tasks/' + t.id, { method: 'DELETE' }); loadTasksPanel(); });
+        row.append(bd, del);
+        el.appendChild(row);
+        if (t.steps && t.steps.length) {
+          const steps = document.createElement('div'); steps.className = 'task-steps';
+          t.steps.forEach((s, i) => {
+            const lbl = document.createElement('label'); lbl.className = 'task-step' + (s.done ? ' done' : '');
+            const sc = document.createElement('input'); sc.type = 'checkbox'; sc.checked = !!s.done;
+            sc.addEventListener('change', async () => { await taskApi('/' + t.id, { stepIndex: i, stepDone: sc.checked }); loadTasksPanel(); });
+            const st = document.createElement('span'); st.textContent = s.text;
+            lbl.append(sc, st); steps.appendChild(lbl);
+          });
+          el.appendChild(steps);
+        }
+        taskList.appendChild(el);
+      }
+    }
+    async function loadTasksPanel() {
+      try { const d = await fetch('/api/tasks').then((r) => r.json()); renderTasks(d.tasks || []); } catch { /* old server */ }
+    }
+    taskAdd.addEventListener('click', async () => {
+      const text = taskInput.value.trim(); if (!text) return;
+      taskInput.value = '';
+      await taskApi('', { text }).catch(() => {});
+      loadTasksPanel();
+    });
+    taskInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); taskAdd.click(); } });
+    taskPrioritize.addEventListener('click', async () => {
+      taskPrioritize.textContent = 'Prioritizing…';
+      try { await taskApi('/prioritize', {}); } catch {} finally { taskPrioritize.textContent = 'Prioritize'; }
+      loadTasksPanel();
     });
 
     // ---- backend switch (free local model ⇄ Claude) ----

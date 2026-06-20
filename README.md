@@ -55,6 +55,11 @@ fallback when you'd rather type.
   choose the screen to share, the webcam light blinks on each glance, an on-screen badge
   shows when it's watching, sensitive screens (banking/passwords) are auto-skipped, and
   you can pause anytime. Turn it on in ⚙ Settings → **Awareness**.
+- **Conversational task manager** — KAEL **captures tasks automatically** when you
+  mention them in chat (_"I need to finish X by Friday and email my prof tonight"_ →
+  two tasks, with deadlines), **prioritizes** them by urgency/importance/deadline,
+  **breaks** any task into actionable steps, and **tracks progress**. Ask _"what
+  should I work on?"_ and it answers from the list; manage them in ⚙ Settings → Tasks.
 - **Proactive coaching (your second brain)** — tell KAEL what you're focusing on
   (type it, or just say _"I'm working on …"_) and it watches your activity against
   that focus, speaking up **sparingly** when you drift off, grind too long, or get
