@@ -103,6 +103,12 @@ let awareness = {
 };
 let observing = false;           // a vision call is in flight — drop overlapping observes
 
+// What KAEL has learned about THIS user, injected into every awareness glance so the
+// frozen local model gets more accurate for them over time. `facts` are durable
+// distilled truths; `corrections` are raw was/actually fixes the user made. The daily
+// routine consolidates corrections into facts. Persisted to awareness-learned.json.
+let learned = { facts: [], corrections: [] };
+
 // ---- Long-term memory (persisted to disk) -----------------------------------
 // KAEL remembers across restarts/reboots. These tune how much is fed to the
 // model verbatim vs. folded into a rolling summary so the context window never
@@ -113,6 +119,7 @@ const DATA_DIR = process.env.KAEL_DATA_DIR
 const MEMORY_FILE = path.join(DATA_DIR, 'memory.json');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');      // persona / temperature / model overrides
 const AWARENESS_FILE = path.join(DATA_DIR, 'awareness.jsonl'); // ambient activity notes (gitignored)
+const AWARENESS_LEARNED_FILE = path.join(DATA_DIR, 'awareness-learned.json'); // personalized facts + corrections
 const TRANSCRIPT_FILE = path.join(DATA_DIR, 'transcript.jsonl');
 const LISTEN_FILE = path.join(DATA_DIR, 'listening.jsonl');  // "listening mode" capture log
 // KAEL always knows the current German time (Varyn's timezone). Injected into the
@@ -238,6 +245,34 @@ function saveConfig() {
     })
     .catch((err) => console.error('Failed to save config:', err.message));
   return savingConfig;
+}
+
+// Awareness "learned profile" — what KAEL knows about this user, grown from their
+// corrections. Same load-once / atomic-save pattern as memory + config.
+async function loadLearned() {
+  try {
+    const d = JSON.parse(await readFile(AWARENESS_LEARNED_FILE, 'utf8'));
+    learned.facts = Array.isArray(d.facts) ? d.facts.filter((f) => typeof f === 'string') : [];
+    learned.corrections = Array.isArray(d.corrections)
+      ? d.corrections.filter((c) => c && typeof c.was === 'string' && typeof c.actually === 'string') : [];
+    console.log(`Awareness learned profile: ${learned.facts.length} facts, ${learned.corrections.length} corrections.`);
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error('Learned profile unreadable; starting fresh.', err.message);
+  }
+}
+
+let savingLearned = Promise.resolve();
+function saveLearned() {
+  const snapshot = JSON.stringify(
+    { version: 1, facts: learned.facts, corrections: learned.corrections, updatedAt: new Date().toISOString() }, null, 2);
+  savingLearned = savingLearned
+    .then(async () => {
+      const tmp = `${AWARENESS_LEARNED_FILE}.tmp`;
+      await writeFile(tmp, snapshot, 'utf8');
+      await rename(tmp, AWARENESS_LEARNED_FILE);
+    })
+    .catch((err) => console.error('Failed to save learned profile:', err.message));
+  return savingLearned;
 }
 
 // Append one message to the permanent, append-only transcript (never trimmed).
@@ -826,18 +861,46 @@ app.post('/api/config', async (req, res) => {
 // A LOCAL vision model glances at Varyn's screen (+ webcam) and writes a one-line
 // note of what he's doing, which feeds KAEL's context. Frames pass straight through
 // to Ollama and are NEVER written to disk or sent anywhere off the machine.
-const AWARENESS_PROMPT =
-  "You are KAEL's ambient awareness. The first image is the user's computer screen" +
-  " (a second image, if present, is their webcam). In UNDER 12 WORDS say what the user" +
-  " is doing — name the app and task, e.g. 'coding in VS Code', 'watching a YouTube" +
-  " video', 'reading email', 'in a video call', 'away from the desk'. If a webcam image" +
-  " is present, add a word or two on their state (focused, away, on the phone). Reply" +
-  " with ONLY that short phrase — no preamble, no full sentences. IMPORTANT: if the" +
-  " screen prominently shows sensitive information (passwords, online banking," +
-  " payment-card numbers, or private medical or legal documents), reply with exactly" +
-  " the single word SENSITIVE and nothing else.";
+// Prompt template. {LEARNED_PROFILE} is replaced per-call with what KAEL has learned
+// about THIS user (their apps/habits + past corrections), so the same local model
+// gets steadily more accurate for them over time — in-context personalization, not
+// weight training. (This wording is refined by the design pass; keep the placeholder
+// and the exact SENSITIVE rule.)
+const AWARENESS_PROMPT = `You are KAEL's ambient-awareness vision module. IMAGE 1 is the user's computer SCREEN. IMAGE 2, if present, is their WEBCAM (their face/desk), not part of the screen.
+
+STEP 1 — SAFETY CHECK FIRST. Look at the screen. If it PROMINENTLY shows any of: a password or login field with a password visible, online banking or an account balance, a full payment-card or bank-account number, or a private medical or legal document — reply with EXACTLY the single word SENSITIVE and nothing else (no punctuation, no other words). A normal app that merely COULD hold private data (a closed email tab, a code editor, a logged-in site with nothing sensitive shown) is NOT sensitive — only redact when the sensitive data is actually visible right now.
+
+STEP 2 — Otherwise, write ONE plain sentence, MAX 22 WORDS, naming these in order and joined naturally, then STOP:
+1) APP — the foreground app or website by its real name, read from the title bar, tab, or window chrome (e.g. VS Code, Edge, Chrome, YouTube, Gmail, Word, Discord, a terminal).
+2) CONTENT — the specific thing on screen: the video title or topic, the file or project name, the document or page heading, the channel or person. Read it from large on-screen text.
+3) TASK — the verb for what they are doing (coding, watching, reading, writing, editing, browsing, debugging, in a call, messaging).
+4) STATE — ONLY if IMAGE 2 (webcam) is present: two or three words on the person — present and focused, looking away, on their phone, or away from the desk.
+
+RULES:
+- Name ONLY what you can actually SEE. If you cannot read the specific content, name the app and the task and stop — never invent a title, filename, or topic.
+- Prefer the most prominent foreground window; ignore the wallpaper, clock, and system tray.
+- Output the sentence only. No labels, no list, no JSON, no markdown, no preamble, no quotes, no trailing note.
+Good output: "Coding in VS Code on the kael project's server.js, focused at the desk." / "Watching a YouTube video about Rust async in Edge, present and attentive." / "At the Windows desktop with no active app."
+
+{LEARNED_PROFILE}
+Treat the profile above as true about THIS user and let it override your first guess. Output now: either SENSITIVE, or one sentence (max 22 words). Nothing else.`;
+
+// Render the learned profile (durable facts + recent corrections) for prompt injection.
+function learnedProfileText() {
+  const parts = [];
+  if (learned.facts.length) {
+    parts.push('What you have learned about this user (use it to be accurate):\n' +
+      learned.facts.map((f) => `- ${f}`).join('\n'));
+  }
+  if (learned.corrections.length) {
+    parts.push('Mistakes you have made before — avoid repeating them:\n' +
+      learned.corrections.slice(-12).map((c) => `- it was NOT "${c.was}" — it was actually "${c.actually}"`).join('\n'));
+  }
+  return parts.length ? parts.join('\n') + '\n' : '';
+}
 
 async function describeActivity(images) {
+  const prompt = AWARENESS_PROMPT.replace('{LEARNED_PROFILE}', learnedProfileText());
   const r = await fetch(`${OLLAMA_URL}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -845,8 +908,8 @@ async function describeActivity(images) {
       model: awareness.model,
       stream: false,
       keep_alive: AWARENESS_KEEP_ALIVE,
-      options: { num_predict: 60, temperature: 0.2 },
-      messages: [{ role: 'user', content: AWARENESS_PROMPT, images }],
+      options: { num_predict: 96, temperature: 0.2 },
+      messages: [{ role: 'user', content: prompt, images }],
     }),
     signal: AbortSignal.timeout(90000),
   });
@@ -943,6 +1006,44 @@ app.get('/api/awareness/log', async (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 500);
   const all = await readJsonl(AWARENESS_FILE);
   res.json({ total: all.length, notes: all.slice(-limit) });
+});
+
+// ---- Awareness self-improvement (learned profile + corrections) -------------
+// The learned profile (facts + corrections) is injected into every glance so the
+// model gets THIS user right over time. The daily routine consolidates corrections
+// into durable facts via these endpoints.
+app.get('/api/awareness/learned', (_req, res) => {
+  res.json({ facts: learned.facts, corrections: learned.corrections });
+});
+
+// Replace the learned profile — used by the daily consolidation routine.
+app.post('/api/awareness/learned', async (req, res) => {
+  const b = req.body || {};
+  if (Array.isArray(b.facts)) {
+    learned.facts = b.facts.map((f) => String(f ?? '').trim()).filter(Boolean).slice(0, 60);
+  }
+  if (Array.isArray(b.corrections)) {
+    learned.corrections = b.corrections
+      .filter((c) => c && c.was != null && c.actually != null)
+      .map((c) => ({ was: String(c.was).slice(0, 200), actually: String(c.actually).slice(0, 200) }))
+      .slice(-100);
+  }
+  await saveLearned();
+  res.json({ facts: learned.facts, corrections: learned.corrections });
+});
+
+// Record a single correction the user made on a note ("it was actually X").
+app.post('/api/awareness/correct', async (req, res) => {
+  const was = String(req.body?.was ?? '').trim();
+  const actually = String(req.body?.actually ?? '').trim();
+  if (!actually) return res.status(400).json({ error: 'Need what you were actually doing.' });
+  learned.corrections.push({ was: was.slice(0, 200), actually: actually.slice(0, 200) });
+  learned.corrections = learned.corrections.slice(-100);
+  // apply it immediately so KAEL stops referencing the wrong activity
+  awareness.latestNote = actually;
+  awareness.latestAt = Date.now();
+  await saveLearned();
+  res.json({ ok: true, corrections: learned.corrections.length });
 });
 
 // Health + readiness. Pings Ollama so the UI can tell whether the local model
@@ -1059,6 +1160,7 @@ async function warmUpModel() {
 await mkdir(DATA_DIR, { recursive: true }).catch(() => {});
 await loadMemory();
 await loadConfig();   // restore persona / temperature / model chosen in the Settings panel
+await loadLearned();  // restore what awareness has learned about the user
 
 app.listen(PORT, () => {
   console.log(`KAEL is live → http://localhost:${PORT}`);

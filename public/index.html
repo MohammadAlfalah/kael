@@ -170,6 +170,8 @@
     .tag-local.on { color: var(--accent); border-color: rgba(94,234,212,.4); }
     .aware-status { font-size: 13px; line-height: 1.5; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 11px; }
     .aware-status .stamp { color: var(--muted); font-size: 11.5px; }
+    .aware-fix { margin-top: 6px; background: transparent; border: 1px solid var(--border); color: var(--muted); font-size: 11px; padding: 3px 9px; border-radius: 999px; cursor: pointer; }
+    .aware-fix:hover { color: var(--accent); border-color: rgba(94,234,212,.4); }
     .aware-log { display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; margin-top: 8px; }
     .aware-log-item { font-size: 12px; line-height: 1.45; color: var(--muted); padding: 4px 8px; border-left: 2px solid var(--border); }
     .aware-log-item .t { color: var(--accent); opacity: .7; font-size: 10.5px; margin-right: 6px; }
@@ -1558,9 +1560,24 @@
         awareBadge.style.display = 'none';
       }
     }
-    function setAwareStatus(text, stamp) {
+    function setAwareStatus(text, stamp, fixable) {
       awareStatus.textContent = text;
       if (stamp) { const s = document.createElement('div'); s.className = 'stamp'; s.textContent = stamp; awareStatus.appendChild(s); }
+      if (fixable) {
+        const b = document.createElement('button');
+        b.className = 'aware-fix'; b.textContent = "✎ that's wrong"; b.title = 'Tell KAEL what you were actually doing — it learns from this';
+        b.onclick = () => correctNote(fixable);
+        awareStatus.appendChild(b);
+      }
+    }
+    // The user corrects a wrong note → KAEL learns it (feeds the nightly routine).
+    async function correctNote(was) {
+      const actually = prompt('What were you actually doing? KAEL will learn from this.', was || '');
+      if (actually == null || !actually.trim()) return;
+      await fetch('/api/awareness/correct', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ was, actually: actually.trim() }) }).catch(() => {});
+      setAwareStatus(actually.trim(), 'corrected · KAEL learned this');
+      flashBrainNote('got it — KAEL learned that');
+      loadAwarenessLog();
     }
     function setAwareUI(on) {
       awareToggle.textContent = on ? 'Stop watching' : 'Start watching';
@@ -1616,11 +1633,14 @@
       grabScreen() {
         const v = this.video;
         if (!v || !v.videoWidth) return null;
-        const maxW = 1100, scale = Math.min(1, maxW / v.videoWidth);
+        // 1280px is the accuracy sweet spot for the 3B model — it reads title bars,
+        // tabs, video titles and headings, while staying ~0.5s warm. Bigger just
+        // burns VRAM/heat for detail the model would miss anyway.
+        const maxW = 1280, scale = Math.min(1, maxW / v.videoWidth);
         const c = document.createElement('canvas');
         c.width = Math.round(v.videoWidth * scale); c.height = Math.round(v.videoHeight * scale);
         c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
-        return c.toDataURL('image/jpeg', 0.6);
+        return c.toDataURL('image/jpeg', 0.72);
       },
 
       // briefly open the webcam, snap one frame, release it (the camera light blinks)
@@ -1633,11 +1653,11 @@
           await v.play().catch(() => {});
           await new Promise((r) => setTimeout(r, 350));   // let the sensor expose a frame
           if (!v.videoWidth) return null;
-          const maxW = 480, scale = Math.min(1, maxW / v.videoWidth);
+          const maxW = 640, scale = Math.min(1, maxW / v.videoWidth);   // present/away/focused is coarse — 640 is plenty
           const c = document.createElement('canvas');
           c.width = Math.round(v.videoWidth * scale); c.height = Math.round(v.videoHeight * scale);
           c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
-          return c.toDataURL('image/jpeg', 0.6);
+          return c.toDataURL('image/jpeg', 0.65);
         } finally { stream.getTracks().forEach((t) => t.stop()); }
       },
 
@@ -1659,7 +1679,7 @@
           });
           if (r.ok) {
             const d = await r.json();
-            if (d && d.note) { setAwareStatus(d.note, 'seen ' + fmtTime(d.at)); this.firstGlance = false; loadAwarenessLog(); }
+            if (d && d.note) { setAwareStatus(d.note, 'seen ' + fmtTime(d.at), d.note); this.firstGlance = false; loadAwarenessLog(); }
           }
         } catch { /* transient / timeout — the next glance retries */ }
         finally { clearTimeout(to); this.busy = false; }
