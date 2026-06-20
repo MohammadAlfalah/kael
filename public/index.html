@@ -165,6 +165,23 @@
     .memory-del { flex: 0 0 auto; background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 6px; }
     .memory-del:hover { color: var(--danger); background: rgba(255,107,107,.08); }
     .memory-summary { font-size: 12.5px; line-height: 1.5; color: var(--muted); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 11px; }
+    /* awareness */
+    .tag-local { font-size: 10px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 2px 7px; margin-left: 6px; vertical-align: middle; }
+    .tag-local.on { color: var(--accent); border-color: rgba(94,234,212,.4); }
+    .aware-status { font-size: 13px; line-height: 1.5; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 11px; }
+    .aware-status .stamp { color: var(--muted); font-size: 11.5px; }
+    .aware-log { display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; margin-top: 8px; }
+    .aware-log-item { font-size: 12px; line-height: 1.45; color: var(--muted); padding: 4px 8px; border-left: 2px solid var(--border); }
+    .aware-log-item .t { color: var(--accent); opacity: .7; font-size: 10.5px; margin-right: 6px; }
+    /* "watching" indicator badge (JS-created) */
+    .aware-badge { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 60;
+      background: rgba(94,234,212,.12); color: var(--accent); border: 1px solid rgba(94,234,212,.4);
+      border-radius: 999px; padding: 5px 13px; font: 600 11px/1 var(--mono); letter-spacing: .5px;
+      display: none; align-items: center; gap: 7px; backdrop-filter: blur(4px); }
+    .aware-badge .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: awareBlink 2.4s ease-in-out infinite; }
+    @keyframes awareBlink { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+    .aware-badge.paused { color: var(--amber); border-color: rgba(245,177,76,.4); background: rgba(245,177,76,.12); cursor: pointer; }
+    .aware-badge.paused .dot { background: var(--amber); animation: none; }
 
     /* ---- Controls ---- */
     footer { padding: 10px 16px 16px; border-top: 1px solid var(--border); background: var(--bg); }
@@ -346,6 +363,24 @@
         <span class="hint">What KAEL durably remembers about you. Remove a single fact with ✕, or wipe it all. (Separate from the chat — "new chat" keeps these.)</span>
       </div>
 
+      <div class="setting-row">
+        <span class="label">Awareness <span class="tag-local" id="awareTag">local · off</span></span>
+        <div class="aware-status" id="awareStatus">Off — KAEL isn't watching your screen.</div>
+        <div class="row" style="margin-top:8px; flex-wrap:wrap;">
+          <button class="mini-btn" id="awareToggle">Start watching</button>
+          <select id="awareInterval" title="How often KAEL glances">
+            <option value="180000">every 3 min</option>
+            <option value="300000" selected>every 5 min</option>
+            <option value="600000">every 10 min</option>
+            <option value="900000">every 15 min</option>
+            <option value="1800000">every 30 min</option>
+          </select>
+          <select id="awareModel" title="Local vision model"></select>
+        </div>
+        <div class="aware-log" id="awareLog"></div>
+        <span class="hint">KAEL glances at your screen and webcam with a <b>local</b> vision model and remembers what you're doing, so it has real context about your day. Nothing is recorded — frames go only to the model on your PC, no images are ever saved, and nothing leaves the machine. You choose what screen to share; the webcam light blinks on each glance. Pause anytime here or from the browser's “stop sharing” bar. Sensitive screens (banking, passwords) are detected and skipped automatically.</span>
+      </div>
+
       <div class="row" style="justify-content:flex-end;">
         <button class="mini-btn" id="settingsClose">Done</button>
       </div>
@@ -389,6 +424,12 @@
     const memoryBox = document.getElementById('memoryBox');
     const memoryRefresh = document.getElementById('memoryRefresh');
     const memoryForget = document.getElementById('memoryForget');
+    const awareTag = document.getElementById('awareTag');
+    const awareStatus = document.getElementById('awareStatus');
+    const awareToggle = document.getElementById('awareToggle');
+    const awareInterval = document.getElementById('awareInterval');
+    const awareModel = document.getElementById('awareModel');
+    const awareLog = document.getElementById('awareLog');
 
     // ---- feature detection ----
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1427,6 +1468,7 @@
         personaInput.dataset.def = cfg.defaultPersona || '';
       } catch { /* server not ready / old build — leave controls as-is */ }
       loadMemoryBox();
+      loadAwarenessPanel();
     }
     async function loadMemoryBox() {
       let mem;
@@ -1488,6 +1530,191 @@
       flashBrainNote('memory wiped');
     });
 
+    // ---- Ambient awareness (screen + webcam glances → local vision model) ----
+    // KAEL periodically looks at a screen you share (getDisplayMedia) plus a quick
+    // webcam frame, sends them to the LOCAL vision model, and keeps a one-line note
+    // of what you're doing so it has real context. Nothing is recorded; the frames
+    // never leave your PC and no images are saved.
+    let awareBadge = null;
+    function setAwareBadge(mode) {   // 'on' | 'paused' | 'off'
+      if (!awareBadge) {
+        awareBadge = document.createElement('div');
+        awareBadge.className = 'aware-badge';
+        document.body.appendChild(awareBadge);
+      }
+      if (mode === 'on') {
+        awareBadge.classList.remove('paused');
+        awareBadge.innerHTML = '<span class="dot"></span> KAEL is watching';
+        awareBadge.title = 'Click to stop';
+        awareBadge.onclick = () => Awareness.stop();
+        awareBadge.style.display = 'flex';
+      } else if (mode === 'paused') {
+        awareBadge.classList.add('paused');
+        awareBadge.innerHTML = '<span class="dot"></span> awareness paused — resume';
+        awareBadge.title = 'Click to resume watching';
+        awareBadge.onclick = () => Awareness.start();
+        awareBadge.style.display = 'flex';
+      } else {
+        awareBadge.style.display = 'none';
+      }
+    }
+    function setAwareStatus(text, stamp) {
+      awareStatus.textContent = text;
+      if (stamp) { const s = document.createElement('div'); s.className = 'stamp'; s.textContent = stamp; awareStatus.appendChild(s); }
+    }
+    function setAwareUI(on) {
+      awareToggle.textContent = on ? 'Stop watching' : 'Start watching';
+      awareTag.textContent = on ? 'local · on' : 'local · off';
+      awareTag.classList.toggle('on', on);
+      setAwareBadge(on ? 'on' : 'off');
+    }
+
+    const Awareness = {
+      enabled: false, intervalMs: 300000, model: '',
+      stream: null, video: null, timer: null, busy: false, firstGlance: true, startSeq: 0,
+
+      async start() {
+        if (this.enabled) return;
+        const myStart = ++this.startSeq;   // so a Stop during the share prompt cancels this start
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 1 }, audio: false });
+        } catch { flashBrainNote('screen share was declined'); return; }
+        // the user hit Stop (or another start began) while the picker was open
+        if (myStart !== this.startSeq) { stream.getTracks().forEach((t) => t.stop()); return; }
+        const video = document.createElement('video');
+        video.muted = true; video.srcObject = stream;
+        await video.play().catch(() => {});
+        // wait for a real frame so we don't flip to "on" over a dead/black stream
+        await new Promise((r) => { if (video.videoWidth) r(); else { video.onloadedmetadata = r; setTimeout(r, 1500); } });
+        if (myStart !== this.startSeq) { stream.getTracks().forEach((t) => t.stop()); return; }
+        if (!video.videoWidth) { stream.getTracks().forEach((t) => t.stop()); flashBrainNote('could not read the shared screen'); return; }
+        this.stream = stream; this.video = video;
+        // user hits the browser's "Stop sharing" bar → shut down cleanly
+        stream.getVideoTracks()[0].addEventListener('ended', () => this.stop());
+        this.enabled = true; this.firstGlance = true;
+        setAwareUI(true);
+        await fetch('/api/awareness', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true }) }).catch(() => {});
+        this.schedule();
+        this.glance();   // first look right away
+      },
+
+      async stop() {
+        this.startSeq++;   // cancel any in-flight start()
+        this.enabled = false;
+        clearInterval(this.timer); this.timer = null;
+        if (this.stream) { this.stream.getTracks().forEach((t) => t.stop()); this.stream = null; }
+        this.video = null;
+        setAwareUI(false);
+        setAwareStatus("Off — KAEL isn't watching your screen.");
+        await fetch('/api/awareness', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) }).catch(() => {});
+      },
+
+      schedule() { clearInterval(this.timer); this.timer = setInterval(() => this.glance(), this.intervalMs); },
+
+      // grab the current frame from the persistent screen-share stream
+      grabScreen() {
+        const v = this.video;
+        if (!v || !v.videoWidth) return null;
+        const maxW = 1100, scale = Math.min(1, maxW / v.videoWidth);
+        const c = document.createElement('canvas');
+        c.width = Math.round(v.videoWidth * scale); c.height = Math.round(v.videoHeight * scale);
+        c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+        return c.toDataURL('image/jpeg', 0.6);
+      },
+
+      // briefly open the webcam, snap one frame, release it (the camera light blinks)
+      async grabWebcam() {
+        let stream;
+        try { stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false }); }
+        catch { return null; }   // no camera / denied / backgrounded → screen-only glance
+        try {
+          const v = document.createElement('video'); v.muted = true; v.srcObject = stream;
+          await v.play().catch(() => {});
+          await new Promise((r) => setTimeout(r, 350));   // let the sensor expose a frame
+          if (!v.videoWidth) return null;
+          const maxW = 480, scale = Math.min(1, maxW / v.videoWidth);
+          const c = document.createElement('canvas');
+          c.width = Math.round(v.videoWidth * scale); c.height = Math.round(v.videoHeight * scale);
+          c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+          return c.toDataURL('image/jpeg', 0.6);
+        } finally { stream.getTracks().forEach((t) => t.stop()); }
+      },
+
+      async glance() {
+        if (!this.enabled || this.busy) return;
+        const screen = this.grabScreen();
+        if (!screen) return;
+        this.busy = true;
+        setAwareStatus(this.firstGlance ? 'looking… (warming up the vision model — up to a minute the first time)' : 'looking…');
+        const webcam = await this.grabWebcam();   // best-effort
+        // a hung request must never wedge `busy` (that would silently kill awareness
+        // while the badge still says "watching") — abort after 90s so the timer recovers
+        const ctrl = new AbortController();
+        const to = setTimeout(() => ctrl.abort(), 90000);
+        try {
+          const r = await fetch('/api/awareness/observe', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(webcam ? { screen, webcam } : { screen }), signal: ctrl.signal,
+          });
+          if (r.ok) {
+            const d = await r.json();
+            if (d && d.note) { setAwareStatus(d.note, 'seen ' + fmtTime(d.at)); this.firstGlance = false; loadAwarenessLog(); }
+          }
+        } catch { /* transient / timeout — the next glance retries */ }
+        finally { clearTimeout(to); this.busy = false; }
+      },
+    };
+
+    async function loadAwarenessLog() {
+      try {
+        const d = await fetch('/api/awareness/log?limit=20').then((r) => r.json());
+        awareLog.innerHTML = '';
+        (d.notes || []).slice().reverse().forEach((n) => {
+          const item = document.createElement('div'); item.className = 'aware-log-item';
+          const t = document.createElement('span'); t.className = 't'; t.textContent = fmtTime(Date.parse(n.at));
+          item.appendChild(t); item.append(n.note);
+          awareLog.appendChild(item);
+        });
+      } catch { /* no log yet */ }
+    }
+
+    async function loadAwarenessPanel() {
+      try {
+        const d = await fetch('/api/awareness').then((r) => r.json());
+        Awareness.intervalMs = d.intervalMs; Awareness.model = d.model;
+        if ([...awareInterval.options].some((o) => Number(o.value) === d.intervalMs)) awareInterval.value = String(d.intervalMs);
+        awareModel.innerHTML = '';
+        (d.models && d.models.length ? d.models : [d.model]).forEach((m) => {
+          const o = document.createElement('option'); o.value = m; o.textContent = m; awareModel.appendChild(o);
+        });
+        awareModel.value = (d.models || []).find((m) => m === d.model || m.startsWith(d.model + ':')) || d.model;
+        // The server remembers "enabled", but the browser must re-grant screen share
+        // after a reload — so show "Resume", don't silently auto-start capture.
+        if (!Awareness.enabled) {
+          if (d.enabled) {
+            awareToggle.textContent = 'Resume watching';
+            awareTag.textContent = 'local · paused'; awareTag.classList.remove('on');
+            setAwareStatus('Paused — click "Resume watching" to share your screen again.');
+          } else { setAwareUI(false); }
+        }
+        loadAwarenessLog();
+      } catch { /* old server without awareness — leave the section idle */ }
+    }
+
+    awareToggle.addEventListener('click', () => { if (Awareness.enabled) Awareness.stop(); else Awareness.start(); });
+    awareInterval.addEventListener('change', async () => {
+      Awareness.intervalMs = Number(awareInterval.value);
+      if (Awareness.enabled) Awareness.schedule();
+      await fetch('/api/awareness', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ intervalMs: Awareness.intervalMs }) }).catch(() => {});
+      flashBrainNote('awareness ' + awareInterval.options[awareInterval.selectedIndex].text);
+    });
+    awareModel.addEventListener('change', async () => {
+      const r = await fetch('/api/awareness', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: awareModel.value }) }).catch(() => null);
+      if (r && r.ok) { Awareness.model = awareModel.value; flashBrainNote('vision model → ' + awareModel.value); }
+      else { const e = r ? await r.json().catch(() => ({})) : {}; flashBrainNote((e && e.error) || 'could not switch vision model'); loadAwarenessPanel(); }
+    });
+
     // ---- backend switch (free local model ⇄ Claude) ----
     let currentProvider = 'ollama';
     function setProviderLabel(p) {
@@ -1540,6 +1767,14 @@
           if (m.role === 'assistant') finalizeBubble(b);
         }
       }
+    })();
+
+    // Awareness persists "on" across restarts, but the browser must re-grant screen
+    // share after a reload — so if it was on, show a paused badge to resume (don't
+    // leave the user thinking it's watching when it isn't).
+    (async () => {
+      const a = await fetchJSONRetry('/api/awareness', { tries: 3, delay: 800 });
+      if (a && a.enabled && !Awareness.enabled) setAwareBadge('paused');
     })();
 
     // ---- text fallback ----

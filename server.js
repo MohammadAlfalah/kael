@@ -27,6 +27,15 @@ const MAX_TOKENS = 4096;
 // Local Ollama (the free default). Override with env vars to use a beefier model
 // (e.g. OLLAMA_MODEL=qwen2.5 or llama3.1) — your GPU/RAM is the only limit.
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+// Awareness ships screen/webcam frames to the vision model, so we ENFORCE that the
+// model is local — frames can never leave this machine unless the owner explicitly
+// opts out with AWARENESS_ALLOW_REMOTE=1. (Chat/TTS aren't image data, so they're
+// not gated; this guard is specifically for the camera/screen frames.)
+const OLLAMA_IS_LOCAL = (() => {
+  try { return ['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0'].includes(new URL(OLLAMA_URL).hostname); }
+  catch { return false; }
+})();
+const AWARENESS_ALLOW_REMOTE = process.env.AWARENESS_ALLOW_REMOTE === '1';
 // The active local model. `let` (not const) so the UI can switch it at runtime
 // via POST /api/config; OLLAMA_MODEL env sets the startup default.
 let OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2';
@@ -43,6 +52,19 @@ const OLLAMA_KEEP_ALIVE = /^-?\d+$/.test(OLLAMA_KEEP_ALIVE_RAW)
   : OLLAMA_KEEP_ALIVE_RAW;
 // Hosted Claude (the optional, paid fallback).
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
+
+// ---- Ambient awareness (optional, OFF by default) ---------------------------
+// A LOCAL vision model that periodically describes what Varyn is doing from
+// screen + webcam frames the browser sends. Fully private: frames go ONLY to the
+// local Ollama model, are never written to disk, and never touch any cloud.
+// Default is qwen2.5vl:3b — it reads screens accurately ("coding in VS Code") and,
+// once warm, glances in ~0.5s for almost no GPU duty; the only cost is a one-time
+// ~60s cold load when awareness first starts and ~2.2GB VRAM while it's on.
+// keep_alive holds it warm between glances; it unloads when awareness is turned off.
+const AWARENESS_MODEL_DEFAULT = process.env.AWARENESS_MODEL || 'qwen2.5vl:3b';
+const AWARENESS_KEEP_ALIVE = process.env.AWARENESS_KEEP_ALIVE || '10m';
+const AWARENESS_MIN_MS = 60000;       // never glance more than once a minute
+const AWARENESS_MAX_MS = 1800000;     // …or less than once every 30 min
 
 // ---- Premium voice (OpenAI TTS) — optional ----------------------------------
 // By default KAEL speaks with the browser's built-in voice (free, no key). If
@@ -69,6 +91,18 @@ let provider =
 let sessionPersona = null;       // overrides KAEL_SYSTEM_PROMPT when set
 let sessionTemperature = null;   // overrides the local model's default sampling temp
 
+// Ambient-awareness state. enabled / intervalMs / model persist in config.json;
+// latestNote + latestAt are live (the most recent observation, injected into the
+// system prompt so KAEL knows what Varyn is currently up to).
+let awareness = {
+  enabled: false,
+  intervalMs: 300000,            // ~5 min between glances (the browser drives the cadence)
+  model: AWARENESS_MODEL_DEFAULT,
+  latestNote: '',
+  latestAt: null,
+};
+let observing = false;           // a vision call is in flight — drop overlapping observes
+
 // ---- Long-term memory (persisted to disk) -----------------------------------
 // KAEL remembers across restarts/reboots. These tune how much is fed to the
 // model verbatim vs. folded into a rolling summary so the context window never
@@ -78,6 +112,7 @@ const DATA_DIR = process.env.KAEL_DATA_DIR
   : path.join(__dirname, 'data');
 const MEMORY_FILE = path.join(DATA_DIR, 'memory.json');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');      // persona / temperature / model overrides
+const AWARENESS_FILE = path.join(DATA_DIR, 'awareness.jsonl'); // ambient activity notes (gitignored)
 const TRANSCRIPT_FILE = path.join(DATA_DIR, 'transcript.jsonl');
 const LISTEN_FILE = path.join(DATA_DIR, 'listening.jsonl');  // "listening mode" capture log
 // KAEL always knows the current German time (Varyn's timezone). Injected into the
@@ -172,7 +207,14 @@ async function loadConfig() {
     sessionTemperature = (typeof data.temperature === 'number' && data.temperature >= 0 && data.temperature <= 2)
       ? data.temperature : null;
     if (typeof data.model === 'string' && data.model) OLLAMA_MODEL = data.model;
-    console.log(`Config loaded: model=${OLLAMA_MODEL}, persona=${sessionPersona ? 'custom' : 'default'}, temp=${sessionTemperature ?? 'default'}.`);
+    if (data.awareness && typeof data.awareness === 'object') {
+      awareness.enabled = data.awareness.enabled === true;
+      if (typeof data.awareness.intervalMs === 'number') {
+        awareness.intervalMs = Math.min(Math.max(data.awareness.intervalMs, AWARENESS_MIN_MS), AWARENESS_MAX_MS);
+      }
+      if (typeof data.awareness.model === 'string' && data.awareness.model) awareness.model = data.awareness.model;
+    }
+    console.log(`Config loaded: model=${OLLAMA_MODEL}, persona=${sessionPersona ? 'custom' : 'default'}, temp=${sessionTemperature ?? 'default'}, awareness=${awareness.enabled ? 'on' : 'off'} (${awareness.model}).`);
   } catch (err) {
     if (err.code !== 'ENOENT') console.error('Config file unreadable; using defaults.', err.message);
   }
@@ -181,7 +223,13 @@ async function loadConfig() {
 let savingConfig = Promise.resolve();
 function saveConfig() {
   const snapshot = JSON.stringify(
-    { version: 1, persona: sessionPersona, temperature: sessionTemperature, model: OLLAMA_MODEL }, null, 2);
+    {
+      version: 1,
+      persona: sessionPersona,
+      temperature: sessionTemperature,
+      model: OLLAMA_MODEL,
+      awareness: { enabled: awareness.enabled, intervalMs: awareness.intervalMs, model: awareness.model },
+    }, null, 2);
   savingConfig = savingConfig
     .then(async () => {
       const tmp = `${CONFIG_FILE}.tmp`;
@@ -225,6 +273,16 @@ function buildSystemPrompt() {
       `You always know the current German time and date — factor it in when it's ` +
       `relevant (greetings, "today", "tonight", scheduling, how long ago something was), ` +
       `but don't state the time unless Varyn asks or it actually matters.`;
+  }
+  // Ambient awareness: tell KAEL what Varyn is doing right now, but only if the
+  // observation is fresh (a stale note from hours ago shouldn't read as "now") —
+  // and never call anything older than 10 min "right now", even at long intervals.
+  const freshWindow = Math.min(awareness.intervalMs * 2.5, 600000);
+  if (awareness.latestNote && awareness.latestAt && (Date.now() - awareness.latestAt) < freshWindow) {
+    sys +=
+      `\n\nRight now, from your ambient awareness of Varyn's screen and webcam, he appears to be: ` +
+      `${awareness.latestNote}. Use this for context to be more helpful and proactive, but don't ` +
+      `announce that you're watching unless he asks or it's genuinely relevant.`;
   }
   if (memory.profile.length) {
     sys +=
@@ -308,7 +366,9 @@ let activeController = null;        // AbortController of the in-flight turn (or
 let activeDone = Promise.resolve(); // resolves once the in-flight turn releases
 
 const app = express();
-app.use(express.json());
+// 12mb so the ambient-awareness endpoint can accept base64 screen+webcam frames
+// (a downscaled JPEG is ~50-200kb; the default 100kb limit would reject them).
+app.use(express.json({ limit: '12mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ---- Web search (Brave) -----------------------------------------------------
@@ -760,6 +820,129 @@ app.post('/api/config', async (req, res) => {
   }
   if (changed) saveConfig();   // persist so the choice survives the next relaunch
   res.json({ persona: sessionPersona, temperature: sessionTemperature, model: OLLAMA_MODEL });
+});
+
+// ---- Ambient awareness ------------------------------------------------------
+// A LOCAL vision model glances at Varyn's screen (+ webcam) and writes a one-line
+// note of what he's doing, which feeds KAEL's context. Frames pass straight through
+// to Ollama and are NEVER written to disk or sent anywhere off the machine.
+const AWARENESS_PROMPT =
+  "You are KAEL's ambient awareness. The first image is the user's computer screen" +
+  " (a second image, if present, is their webcam). In UNDER 12 WORDS say what the user" +
+  " is doing — name the app and task, e.g. 'coding in VS Code', 'watching a YouTube" +
+  " video', 'reading email', 'in a video call', 'away from the desk'. If a webcam image" +
+  " is present, add a word or two on their state (focused, away, on the phone). Reply" +
+  " with ONLY that short phrase — no preamble, no full sentences. IMPORTANT: if the" +
+  " screen prominently shows sensitive information (passwords, online banking," +
+  " payment-card numbers, or private medical or legal documents), reply with exactly" +
+  " the single word SENSITIVE and nothing else.";
+
+async function describeActivity(images) {
+  const r = await fetch(`${OLLAMA_URL}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: awareness.model,
+      stream: false,
+      keep_alive: AWARENESS_KEEP_ALIVE,
+      options: { num_predict: 60, temperature: 0.2 },
+      messages: [{ role: 'user', content: AWARENESS_PROMPT, images }],
+    }),
+    signal: AbortSignal.timeout(90000),
+  });
+  if (!r.ok) throw new Error(`vision ${r.status}`);
+  const j = await r.json();
+  return (j.message?.content || '').trim();
+}
+
+// Installed models that look like vision models, for the picker (falls back to all).
+async function visionModels() {
+  const all = await installedModels();
+  const re = /vl|vision|llava|moondream|bakllava|minicpm-v|gemma3|cogvlm/i;
+  const vis = all.filter((n) => re.test(n));
+  return vis.length ? vis : all;
+}
+
+app.get('/api/awareness', async (_req, res) => {
+  res.json({
+    enabled: awareness.enabled,
+    intervalMs: awareness.intervalMs,
+    model: awareness.model,
+    models: await visionModels(),
+    latestNote: awareness.latestNote,
+    latestAt: awareness.latestAt,
+  });
+});
+
+app.post('/api/awareness', async (req, res) => {
+  const b = req.body || {};
+  let changed = false;
+  if ('enabled' in b) { awareness.enabled = b.enabled === true; changed = true; }
+  if ('intervalMs' in b) {
+    const n = Number(b.intervalMs);
+    if (Number.isFinite(n)) {
+      awareness.intervalMs = Math.min(Math.max(n, AWARENESS_MIN_MS), AWARENESS_MAX_MS);
+      changed = true;
+    }
+  }
+  if ('model' in b && typeof b.model === 'string' && b.model) {
+    const models = await installedModels();
+    if (!models.some((n) => n === b.model || n.startsWith(`${b.model}:`))) {
+      return res.status(400).json({ error: `Model "${b.model}" is not installed. Pull it with: ollama pull ${b.model}` });
+    }
+    awareness.model = b.model;
+    changed = true;
+  }
+  if (changed) saveConfig();
+  // turning it off forgets the current activity so KAEL stops referencing it
+  if (!awareness.enabled) { awareness.latestNote = ''; awareness.latestAt = null; }
+  res.json({ enabled: awareness.enabled, intervalMs: awareness.intervalMs, model: awareness.model });
+});
+
+// The browser posts a fresh screen (+ optional webcam) frame; the local vision
+// model turns it into a one-line activity note. Images are never persisted.
+let lastObserveAt = 0;
+app.post('/api/awareness/observe', async (req, res) => {
+  if (!awareness.enabled) return res.status(409).json({ error: 'Awareness is off.' });
+  // Enforce the privacy promise: never send frames to a non-local vision model.
+  if (!OLLAMA_IS_LOCAL && !AWARENESS_ALLOW_REMOTE) {
+    return res.status(403).json({ error: 'Awareness is blocked: OLLAMA_URL is not local, so frames would leave this machine. Set AWARENESS_ALLOW_REMOTE=1 to override.' });
+  }
+  if (observing) return res.status(202).json({ skipped: 'busy' });            // a glance is already running
+  if (Date.now() - lastObserveAt < AWARENESS_MIN_MS) return res.status(202).json({ skipped: 'throttled' });
+  const strip = (s) => (typeof s === 'string' ? s.replace(/^data:[^,]+,/, '') : '');
+  const images = [strip(req.body?.screen), strip(req.body?.webcam)].filter(Boolean);
+  if (!images.length) return res.status(400).json({ error: 'Need a screen or webcam frame.' });
+  observing = true;
+  lastObserveAt = Date.now();
+  try {
+    let note = await describeActivity(images);
+    // Redaction (fail-safe): if the model flags the screen as sensitive — even with
+    // extra words — drop the description entirely. As a backstop against the model
+    // NOT flagging it, scrub long digit runs (account/card numbers) from any stored
+    // note and cap its length, so the on-disk log never accretes raw numbers.
+    const sensitive = /\bSENSITIVE\b/.test(note.toUpperCase());
+    if (sensitive) note = '(private screen — not recorded)';
+    else note = note.replace(/\d{4,}/g, '••••').slice(0, 200);
+    if (note) {
+      awareness.latestNote = note;
+      awareness.latestAt = Date.now();
+      await appendFile(AWARENESS_FILE,
+        JSON.stringify({ at: new Date().toISOString(), note, sensitive }) + '\n', 'utf8').catch(() => {});
+    }
+    res.json({ note, at: awareness.latestAt, sensitive });
+  } catch (err) {
+    res.status(502).json({ error: `Vision model failed: ${err.message}` });
+  } finally {
+    observing = false;
+  }
+});
+
+// Recent activity notes (the awareness log), newest last.
+app.get('/api/awareness/log', async (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 500);
+  const all = await readJsonl(AWARENESS_FILE);
+  res.json({ total: all.length, notes: all.slice(-limit) });
 });
 
 // Health + readiness. Pings Ollama so the UI can tell whether the local model

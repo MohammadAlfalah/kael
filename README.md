@@ -45,6 +45,19 @@ fallback when you'd rather type.
   It keeps a rolling summary of older chats plus a profile of durable facts about
   you, saved to disk (`data/`, gitignored). The summarizing is done by the free
   local model, so nothing leaves your machine and it costs no API tokens.
+- **Ambient awareness (optional, off by default)** — KAEL can glance at a screen
+  you share plus a quick webcam frame every few minutes, run them through a **local
+  vision model** (Ollama, default `qwen2.5vl:3b`), and remember a one-line note of
+  what you're doing — so it has real context (_"you've been heads-down a while —
+  want a break?"_). Fully private: frames go only to the local model, **no images are
+  ever saved**, and nothing leaves your machine (it _refuses_ a non-local Ollama). You
+  choose the screen to share, the webcam light blinks on each glance, an on-screen badge
+  shows when it's watching, sensitive screens (banking/passwords) are auto-skipped, and
+  you can pause anytime. Turn it on in ⚙ Settings → **Awareness**.
+- **Control panel** — ⚙ Settings also lets you switch the local model, tune the
+  reply temperature, edit KAEL's persona, and view/edit what it remembers about you.
+- **On-screen extras** — replies render markdown, each message has Copy / Replay /
+  Regenerate actions, and the conversation survives a reload.
 - **Single-user, no auth** — it's your personal hub.
 - **Text fallback** — a slim input is always there for quiet rooms or when voice
   isn't available.
@@ -92,6 +105,13 @@ ollama pull llama3.2
 `llama3.2` (3B) is small, fast, and runs comfortably on a modest GPU/laptop.
 Want sharper answers and have the hardware? Pull a bigger one (`ollama pull
 qwen2.5` or `ollama pull llama3.1`) and set `OLLAMA_MODEL` in `.env`.
+
+Want the optional **ambient awareness** feature? Also pull a vision model — it
+stays warm and glances in well under a second once loaded:
+
+```bash
+ollama pull qwen2.5vl:3b
+```
 
 Make sure Ollama is running (`ollama serve`, or just launch the Ollama app).
 
