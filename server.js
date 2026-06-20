@@ -128,7 +128,7 @@ let coaching = {
   lastNudgeAt: 0,
   lastNudge: '',
 };
-const COACH_COOLDOWN = { chill: 1800000, balanced: 1200000, strict: 600000 };  // min ms between nudges
+const COACH_COOLDOWN = { chill: 1200000, balanced: 600000, strict: 240000 };  // min ms between remarks (20m / 10m / ~every glance)
 
 // ---- Long-term memory (persisted to disk) -----------------------------------
 // KAEL remembers across restarts/reboots. These tune how much is fed to the
@@ -982,29 +982,40 @@ async function localChat(messages, opts = {}) {
 
 const minsAgo = (iso) => Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
 
-// Look at recent activity vs the user's stated focus and decide whether to say ONE
-// short thing out loud. Returns the spoken nudge, or null to stay quiet. Gated by a
-// per-intensity cooldown so it advises, never nags.
+// KAEL's proactive voice: look at recent activity and decide whether to say ONE
+// thing OUT LOUD, on its own. Works with OR without a focus — with a focus it also
+// coaches toward it. Returns the remark, or null to stay quiet. A per-intensity
+// cooldown bounds how often it speaks so it's present, not spammy.
 async function coachCheck() {
-  if (!coaching.enabled || !coaching.goal) return null;
+  if (!coaching.enabled) return null;
   if (Date.now() - coaching.lastNudgeAt < (COACH_COOLDOWN[coaching.intensity] || COACH_COOLDOWN.balanced)) return null;
   const recent = (await readJsonl(AWARENESS_FILE)).slice(-10);
-  if (recent.length < 2) return null;   // need a little history to judge a trend
+  if (!recent.length) return null;   // nothing observed yet
   const timeline = recent.map((n) => `- ${minsAgo(n.at)} min ago: ${n.note}`).join('\n');
+  const focusLine = coaching.goal
+    ? `Their stated focus right now is: "${coaching.goal}". Hold them to it.`
+    : `They have NOT set a focus — so just be good company; react to what they're actually doing.`;
+  const willingness = {
+    chill: 'Speak only when it clearly adds something; a long quiet stretch is fine.',
+    balanced: 'Speak when there is something genuine to say; you do not have to fill every silence.',
+    strict: 'Be talkative and present — make a natural remark most of the time, UNLESS they are clearly in deep flow you should not break.',
+  }[coaching.intensity] || 'Speak when there is something genuine to say.';
   const prompt =
-`You are KAEL, the user's second-brain focus coach, speaking to them out loud. Their stated focus right now is: "${coaching.goal}".
+`You are KAEL, the user's ever-present AI companion. You watch their day over their shoulder and speak up ON YOUR OWN, like a sharp friend in the room — NOT only when asked, and NOT only as a coach. ${focusLine}
 Their recent on-screen activity (oldest first, newest last):
 ${timeline}
 
-Decide if you should say ONE short thing to them right now. Speak up ONLY when it genuinely helps:
-- They've drifted from their focus to something unrelated (videos, social, games) for a sustained stretch -> nudge them back, kind but direct.
-- They've been deeply focused on the goal for a long stretch -> a brief acknowledgement, or suggest a short break if it has been very long.
-- They seem stuck on the same thing for a long time -> offer to help or talk it through.
-- They're rapidly switching between many things -> suggest picking one.
-Stay quiet if they're on task, just took a reasonable break, are away from the desk, or there is simply nothing worth saying.
+Decide whether to say ONE short, natural thing to them out loud RIGHT NOW. Good reasons to speak up:
+- They just came back, or clearly started something new -> a brief, warm greeting or kickoff.
+- They've been deep in one thing a while -> acknowledge the focus, or gently suggest a breather if it's been very long.
+- Something specific and noteworthy is on screen -> a quick, genuine reaction to it.
+- A focus is set and they've drifted to something unrelated -> nudge them back, kind but direct.
+- They seem stuck or frustrated -> offer to help or talk it through.
+- A natural check-in feels due.
+${willingness} You are a presence, not a silent camera — but never be vapid ("still coding!"), never repeat yourself, be SPECIFIC to what you actually see, and don't break their obvious deep flow.
 
-Your previous nudge was: "${coaching.lastNudge || '(none)'}". Do not repeat it or nag.
-Reply with EXACTLY the single word QUIET to stay silent. Otherwise reply with ONE warm, direct spoken sentence (max 18 words) - no preamble, no quotes, no emoji.`;
+Your previous remark was: "${coaching.lastNudge || '(none)'}". Never repeat it.
+Reply with EXACTLY the single word QUIET to stay silent, OR ONE warm, specific spoken sentence (max 20 words) - no preamble, no quotes, no emoji.`;
   let out;
   try {
     // num_predict must be generous: reasoning models (gpt-oss) burn tokens thinking

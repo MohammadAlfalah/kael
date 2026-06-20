@@ -394,18 +394,18 @@
       </div>
 
       <div class="setting-row">
-        <span class="label">Coaching <span class="tag-local" id="coachTag">off</span></span>
-        <input id="coachGoal" type="text" class="coach-goal" placeholder="What are you focusing on right now?" maxlength="300">
+        <span class="label">Proactive — talks on its own <span class="tag-local" id="coachTag">off</span></span>
+        <input id="coachGoal" type="text" class="coach-goal" placeholder="Focus (optional) — what you're working on" maxlength="300">
         <div class="row" style="margin-top:8px; flex-wrap:wrap;">
-          <button class="mini-btn" id="coachToggle">Start coaching</button>
-          <select id="coachIntensity" title="How often KAEL speaks up">
-            <option value="chill">chill — rarely</option>
+          <button class="mini-btn" id="coachToggle">Start</button>
+          <select id="coachIntensity" title="How chatty KAEL is">
+            <option value="chill">occasional</option>
             <option value="balanced" selected>balanced</option>
-            <option value="strict">strict — often</option>
+            <option value="strict">chatty</option>
           </select>
-          <select id="coachModel" title="Coaching brain"></select>
+          <select id="coachModel" title="Proactive brain"></select>
         </div>
-        <span class="hint">KAEL watches your activity against your focus and speaks up when you drift off, get stuck, or grind too long — like a second brain keeping you honest. <b>Needs awareness on.</b> You can also just say <i>“I'm working on …”</i> to set your focus. The coaching <b>brain</b> reasons over your activity timeline: the small local model is too weak to judge this reliably, so it defaults to your <b>gpt-oss cloud</b> model — meaning your activity <i>summaries</i> (text lines, never screenshots) go to that model for the decision. Pick a local model for full privacy (but it'll rarely speak up).</span>
+        <span class="hint">KAEL speaks up <b>on its own</b> — greetings, observations, check-ins, encouragement — based on what it sees you doing, not only when you talk to it. Set a <b>focus</b> (optional, or just say <i>“I'm working on …”</i>) and it also keeps you on track (nudges drift, suggests breaks, offers help when you're stuck). <b>Needs awareness on.</b> The <b>brain</b> reasons over your activity timeline — the small local model is too weak to judge this, so it defaults to your <b>gpt-oss cloud</b> model, meaning your activity <i>summaries</i> (text lines, never screenshots) go to it for the decision. Pick a local model for full privacy (but it'll rarely speak).</span>
       </div>
 
       <div class="row" style="justify-content:flex-end;">
@@ -1838,7 +1838,7 @@
     // ---- Proactive coaching (KAEL speaks up when you drift / grind / get stuck) ----
     let coachEnabled = false;
     function setCoachUI(on) {
-      coachToggle.textContent = on ? 'Stop coaching' : 'Start coaching';
+      coachToggle.textContent = on ? 'Stop' : 'Start';
       coachTag.textContent = on ? 'on' : 'off';
       coachTag.classList.toggle('on', on);
     }
@@ -1871,8 +1871,7 @@
       coachEnabled = !coachEnabled;
       setCoachUI(coachEnabled);
       await postCoach({ enabled: coachEnabled }).catch(() => {});
-      if (coachEnabled && !coachGoal.value.trim()) flashBrainNote('set a focus so KAEL knows what to keep you on');
-      else flashBrainNote(coachEnabled ? 'coaching on' : 'coaching off');
+      flashBrainNote(coachEnabled ? "proactive on — KAEL will speak up on its own" : 'proactive off');
     });
     coachGoal.addEventListener('change', async () => {
       await postCoach({ goal: coachGoal.value.trim() }).catch(() => {});
