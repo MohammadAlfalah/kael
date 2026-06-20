@@ -172,6 +172,8 @@
     .aware-status .stamp { color: var(--muted); font-size: 11.5px; }
     .aware-fix { margin-top: 6px; background: transparent; border: 1px solid var(--border); color: var(--muted); font-size: 11px; padding: 3px 9px; border-radius: 999px; cursor: pointer; }
     .aware-fix:hover { color: var(--accent); border-color: rgba(94,234,212,.4); }
+    .coach-goal { width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font: 13px/1.4 var(--sans); padding: 9px 11px; }
+    .coach-goal:focus { outline: none; border-color: var(--accent); }
     .aware-log { display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; margin-top: 8px; }
     .aware-log-item { font-size: 12px; line-height: 1.45; color: var(--muted); padding: 4px 8px; border-left: 2px solid var(--border); }
     .aware-log-item .t { color: var(--accent); opacity: .7; font-size: 10.5px; margin-right: 6px; }
@@ -383,6 +385,21 @@
         <span class="hint">KAEL glances at your screen and webcam with a <b>local</b> vision model and remembers what you're doing, so it has real context about your day. Nothing is recorded — frames go only to the model on your PC, no images are ever saved, and nothing leaves the machine. You choose what screen to share; the webcam light blinks on each glance. Pause anytime here or from the browser's “stop sharing” bar. Sensitive screens (banking, passwords) are detected and skipped automatically.</span>
       </div>
 
+      <div class="setting-row">
+        <span class="label">Coaching <span class="tag-local" id="coachTag">off</span></span>
+        <input id="coachGoal" type="text" class="coach-goal" placeholder="What are you focusing on right now?" maxlength="300">
+        <div class="row" style="margin-top:8px; flex-wrap:wrap;">
+          <button class="mini-btn" id="coachToggle">Start coaching</button>
+          <select id="coachIntensity" title="How often KAEL speaks up">
+            <option value="chill">chill — rarely</option>
+            <option value="balanced" selected>balanced</option>
+            <option value="strict">strict — often</option>
+          </select>
+          <select id="coachModel" title="Coaching brain"></select>
+        </div>
+        <span class="hint">KAEL watches your activity against your focus and speaks up when you drift off, get stuck, or grind too long — like a second brain keeping you honest. <b>Needs awareness on.</b> You can also just say <i>“I'm working on …”</i> to set your focus. The coaching <b>brain</b> reasons over your activity timeline: the small local model is too weak to judge this reliably, so it defaults to your <b>gpt-oss cloud</b> model — meaning your activity <i>summaries</i> (text lines, never screenshots) go to that model for the decision. Pick a local model for full privacy (but it'll rarely speak up).</span>
+      </div>
+
       <div class="row" style="justify-content:flex-end;">
         <button class="mini-btn" id="settingsClose">Done</button>
       </div>
@@ -432,6 +449,11 @@
     const awareInterval = document.getElementById('awareInterval');
     const awareModel = document.getElementById('awareModel');
     const awareLog = document.getElementById('awareLog');
+    const coachTag = document.getElementById('coachTag');
+    const coachGoal = document.getElementById('coachGoal');
+    const coachToggle = document.getElementById('coachToggle');
+    const coachIntensity = document.getElementById('coachIntensity');
+    const coachModel = document.getElementById('coachModel');
 
     // ---- feature detection ----
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1308,6 +1330,21 @@
         return;
       }
 
+      // "I'm working on X" / "set my focus to X" → set the coaching focus by voice
+      const focusMatch = message.match(/^\s*(?:kael[,\s]+)?(?:i'?m\s+(?:now\s+|gonna\s+|going to\s+)?(?:working on|focusing on)|set (?:my )?focus (?:to|on)|my focus (?:is|will be)(?: now)?|let'?s\s+(?:work on|focus on))\s+(.+?)\s*[.!]*\s*$/i);
+      if (focusMatch && focusMatch[1].trim().length >= 2) {
+        const goal = focusMatch[1].trim();
+        clearTimeout(openSilenceTimer); openMicActive = false; openBuffer = '';
+        if (recognizing) { try { recognition.abort(); } catch {} recognizing = false; }
+        addMessage('user', 'YOU', message);
+        coachGoal.value = goal;
+        await postCoach({ goal, enabled: true }).catch(() => {});
+        const line = `Got it — focusing on ${goal}. I'll keep you on track.`;
+        const b = addMessage('kael', 'KAEL', line); finalizeBubble(b);
+        stopSpeaking(); streamDone = true; speakSentence(line);
+        return;
+      }
+
       interimEl.textContent = '';
       clearTimeout(openSilenceTimer);
       openMicActive = false; openBuffer = '';     // go deaf while we think/speak
@@ -1471,6 +1508,7 @@
       } catch { /* server not ready / old build — leave controls as-is */ }
       loadMemoryBox();
       loadAwarenessPanel();
+      loadCoachPanel();
     }
     async function loadMemoryBox() {
       let mem;
@@ -1680,6 +1718,7 @@
           if (r.ok) {
             const d = await r.json();
             if (d && d.note) { setAwareStatus(d.note, 'seen ' + fmtTime(d.at), d.note); this.firstGlance = false; loadAwarenessLog(); }
+            if (d && d.coach) speakCoachNudge(d.coach);   // proactive nudge rides along on the glance
           }
         } catch { /* transient / timeout — the next glance retries */ }
         finally { clearTimeout(to); this.busy = false; }
@@ -1733,6 +1772,59 @@
       const r = await fetch('/api/awareness', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: awareModel.value }) }).catch(() => null);
       if (r && r.ok) { Awareness.model = awareModel.value; flashBrainNote('vision model → ' + awareModel.value); }
       else { const e = r ? await r.json().catch(() => ({})) : {}; flashBrainNote((e && e.error) || 'could not switch vision model'); loadAwarenessPanel(); }
+    });
+
+    // ---- Proactive coaching (KAEL speaks up when you drift / grind / get stuck) ----
+    let coachEnabled = false;
+    function setCoachUI(on) {
+      coachToggle.textContent = on ? 'Stop coaching' : 'Start coaching';
+      coachTag.textContent = on ? 'on' : 'off';
+      coachTag.classList.toggle('on', on);
+    }
+    // Speak a proactive nudge (and show it), but never interrupt a real conversation turn.
+    function speakCoachNudge(text) {
+      if (!text || state === 'thinking' || state === 'speaking') return;
+      const b = addMessage('kael', 'KAEL', text);
+      finalizeBubble(b);
+      stopSpeaking(); streamDone = true;
+      speakSentence(text);
+    }
+    function postCoach(body) {
+      return fetch('/api/coach', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    }
+    async function loadCoachPanel() {
+      try {
+        const d = await fetch('/api/coach').then((r) => r.json());
+        coachEnabled = !!d.enabled;
+        coachGoal.value = d.goal || '';
+        if (['chill', 'balanced', 'strict'].includes(d.intensity)) coachIntensity.value = d.intensity;
+        coachModel.innerHTML = '';
+        (d.models && d.models.length ? d.models : [d.model]).forEach((m) => {
+          const o = document.createElement('option'); o.value = m; o.textContent = m; coachModel.appendChild(o);
+        });
+        coachModel.value = (d.models || []).find((m) => m === d.model || m.startsWith(d.model + ':')) || d.model;
+        setCoachUI(coachEnabled);
+      } catch { /* old server without coaching — leave the section idle */ }
+    }
+    coachToggle.addEventListener('click', async () => {
+      coachEnabled = !coachEnabled;
+      setCoachUI(coachEnabled);
+      await postCoach({ enabled: coachEnabled }).catch(() => {});
+      if (coachEnabled && !coachGoal.value.trim()) flashBrainNote('set a focus so KAEL knows what to keep you on');
+      else flashBrainNote(coachEnabled ? 'coaching on' : 'coaching off');
+    });
+    coachGoal.addEventListener('change', async () => {
+      await postCoach({ goal: coachGoal.value.trim() }).catch(() => {});
+      flashBrainNote(coachGoal.value.trim() ? 'focus set' : 'focus cleared');
+    });
+    coachIntensity.addEventListener('change', async () => {
+      await postCoach({ intensity: coachIntensity.value }).catch(() => {});
+      flashBrainNote('coaching: ' + coachIntensity.value);
+    });
+    coachModel.addEventListener('change', async () => {
+      const r = await postCoach({ model: coachModel.value }).catch(() => null);
+      if (r && r.ok) flashBrainNote('coach brain → ' + coachModel.value);
+      else { const e = r ? await r.json().catch(() => ({})) : {}; flashBrainNote((e && e.error) || 'could not switch coach brain'); loadCoachPanel(); }
     });
 
     // ---- backend switch (free local model ⇄ Claude) ----

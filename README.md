@@ -54,6 +54,14 @@ fallback when you'd rather type.
   choose the screen to share, the webcam light blinks on each glance, an on-screen badge
   shows when it's watching, sensitive screens (banking/passwords) are auto-skipped, and
   you can pause anytime. Turn it on in ⚙ Settings → **Awareness**.
+- **Proactive coaching (your second brain)** — tell KAEL what you're focusing on
+  (type it, or just say _"I'm working on …"_) and it watches your activity against
+  that focus, speaking up **sparingly** when you drift off, grind too long, or get
+  stuck — and acknowledging real focus. Built on awareness; a cooldown keeps it from
+  nagging. The coaching _judgment_ needs a capable model (a 3B can't tell drift from
+  focus reliably), so it defaults to a stronger model — note that a cloud coach model
+  sees your activity **summaries** (text lines, never screenshots); switch it to a
+  local model in Settings for full privacy.
 - **Control panel** — ⚙ Settings also lets you switch the local model, tune the
   reply temperature, edit KAEL's persona, and view/edit what it remembers about you.
 - **On-screen extras** — replies render markdown, each message has Copy / Replay /

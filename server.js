@@ -109,6 +109,25 @@ let observing = false;           // a vision call is in flight — drop overlapp
 // routine consolidates corrections into facts. Persisted to awareness-learned.json.
 let learned = { facts: [], corrections: [] };
 
+// Proactive coaching — KAEL watches the activity stream against the user's stated
+// focus and speaks up SPARINGLY about drift, deep focus, being stuck, or lazing off.
+// The decision is made by the free LOCAL chat model. enabled/goal/intensity persist
+// in config; lastNudge* are runtime (cooldown + don't-repeat).
+let coaching = {
+  enabled: false,
+  goal: '',                  // what the user is trying to focus on right now
+  intensity: 'balanced',     // chill | balanced | strict — how often it may speak
+  // The coaching JUDGMENT needs a capable model — the 3B local model can't reliably
+  // tell drift from focus (it false-negatives AND false-positives). Default to the
+  // user's gpt-oss cloud model, which gets it right; switchable to a local model in
+  // the UI. NOTE: a cloud coach model sends the activity TIMELINE (text notes, never
+  // screenshots) to that model — a deliberate, disclosed trade for a coach that works.
+  model: process.env.COACH_MODEL || 'gpt-oss:120b-cloud',
+  lastNudgeAt: 0,
+  lastNudge: '',
+};
+const COACH_COOLDOWN = { chill: 1800000, balanced: 1200000, strict: 600000 };  // min ms between nudges
+
 // ---- Long-term memory (persisted to disk) -----------------------------------
 // KAEL remembers across restarts/reboots. These tune how much is fed to the
 // model verbatim vs. folded into a rolling summary so the context window never
@@ -221,7 +240,13 @@ async function loadConfig() {
       }
       if (typeof data.awareness.model === 'string' && data.awareness.model) awareness.model = data.awareness.model;
     }
-    console.log(`Config loaded: model=${OLLAMA_MODEL}, persona=${sessionPersona ? 'custom' : 'default'}, temp=${sessionTemperature ?? 'default'}, awareness=${awareness.enabled ? 'on' : 'off'} (${awareness.model}).`);
+    if (data.coaching && typeof data.coaching === 'object') {
+      coaching.enabled = data.coaching.enabled === true;
+      if (typeof data.coaching.goal === 'string') coaching.goal = data.coaching.goal.slice(0, 300);
+      if (['chill', 'balanced', 'strict'].includes(data.coaching.intensity)) coaching.intensity = data.coaching.intensity;
+      if (typeof data.coaching.model === 'string' && data.coaching.model) coaching.model = data.coaching.model;
+    }
+    console.log(`Config loaded: model=${OLLAMA_MODEL}, persona=${sessionPersona ? 'custom' : 'default'}, temp=${sessionTemperature ?? 'default'}, awareness=${awareness.enabled ? 'on' : 'off'} (${awareness.model}), coaching=${coaching.enabled ? 'on' : 'off'}.`);
   } catch (err) {
     if (err.code !== 'ENOENT') console.error('Config file unreadable; using defaults.', err.message);
   }
@@ -236,6 +261,7 @@ function saveConfig() {
       temperature: sessionTemperature,
       model: OLLAMA_MODEL,
       awareness: { enabled: awareness.enabled, intervalMs: awareness.intervalMs, model: awareness.model },
+      coaching: { enabled: coaching.enabled, goal: coaching.goal, intensity: coaching.intensity, model: coaching.model },
     }, null, 2);
   savingConfig = savingConfig
     .then(async () => {
@@ -880,7 +906,7 @@ RULES:
 - Name ONLY what you can actually SEE. If you cannot read the specific content, name the app and the task and stop — never invent a title, filename, or topic.
 - Prefer the most prominent foreground window; ignore the wallpaper, clock, and system tray.
 - Output the sentence only. No labels, no list, no JSON, no markdown, no preamble, no quotes, no trailing note.
-Good output: "Coding in VS Code on the kael project's server.js, focused at the desk." / "Watching a YouTube video about Rust async in Edge, present and attentive." / "At the Windows desktop with no active app."
+FORMAT EXAMPLES (copy the STYLE only — NEVER copy these words or topics; describe what is ACTUALLY on the screen): "Coding in VS Code, editing a JavaScript file, focused at the desk." / "Watching a video on YouTube in Edge, present and attentive." / "Reading email in Gmail." / "At the Windows desktop with no active app."
 
 {LEARNED_PROFILE}
 Treat the profile above as true about THIS user and let it override your first guess. Output now: either SENSITIVE, or one sentence (max 22 words). Nothing else.`;
@@ -916,6 +942,68 @@ async function describeActivity(images) {
   if (!r.ok) throw new Error(`vision ${r.status}`);
   const j = await r.json();
   return (j.message?.content || '').trim();
+}
+
+// ---- Proactive coaching -----------------------------------------------------
+// A non-streaming Ollama chat call, used for the coaching judgment.
+async function localChat(messages, opts = {}) {
+  const body = {
+    model: opts.model || OLLAMA_MODEL,
+    stream: false,
+    keep_alive: OLLAMA_KEEP_ALIVE,
+    options: { num_ctx: OLLAMA_CTX, temperature: opts.temperature ?? 0.4, num_predict: opts.num_predict ?? 80 },
+    messages,
+  };
+  // reasoning models (e.g. gpt-oss) bury the answer in their chain-of-thought unless
+  // we disable it — then the answer lands cleanly in message.content
+  if (opts.think !== undefined) body.think = opts.think;
+  const r = await fetch(`${OLLAMA_URL}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(opts.timeout ?? 30000),
+  });
+  if (!r.ok) throw new Error(`chat ${r.status}`);
+  return ((await r.json()).message?.content || '').trim();
+}
+
+const minsAgo = (iso) => Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+
+// Look at recent activity vs the user's stated focus and decide whether to say ONE
+// short thing out loud. Returns the spoken nudge, or null to stay quiet. Gated by a
+// per-intensity cooldown so it advises, never nags.
+async function coachCheck() {
+  if (!coaching.enabled || !coaching.goal) return null;
+  if (Date.now() - coaching.lastNudgeAt < (COACH_COOLDOWN[coaching.intensity] || COACH_COOLDOWN.balanced)) return null;
+  const recent = (await readJsonl(AWARENESS_FILE)).slice(-10);
+  if (recent.length < 2) return null;   // need a little history to judge a trend
+  const timeline = recent.map((n) => `- ${minsAgo(n.at)} min ago: ${n.note}`).join('\n');
+  const prompt =
+`You are KAEL, the user's second-brain focus coach, speaking to them out loud. Their stated focus right now is: "${coaching.goal}".
+Their recent on-screen activity (oldest first, newest last):
+${timeline}
+
+Decide if you should say ONE short thing to them right now. Speak up ONLY when it genuinely helps:
+- They've drifted from their focus to something unrelated (videos, social, games) for a sustained stretch -> nudge them back, kind but direct.
+- They've been deeply focused on the goal for a long stretch -> a brief acknowledgement, or suggest a short break if it has been very long.
+- They seem stuck on the same thing for a long time -> offer to help or talk it through.
+- They're rapidly switching between many things -> suggest picking one.
+Stay quiet if they're on task, just took a reasonable break, are away from the desk, or there is simply nothing worth saying.
+
+Your previous nudge was: "${coaching.lastNudge || '(none)'}". Do not repeat it or nag.
+Reply with EXACTLY the single word QUIET to stay silent. Otherwise reply with ONE warm, direct spoken sentence (max 18 words) - no preamble, no quotes, no emoji.`;
+  let out;
+  try {
+    // num_predict must be generous: reasoning models (gpt-oss) burn tokens thinking
+    // even with think:false, and a too-small budget cuts them off before the answer.
+    out = await localChat([{ role: 'user', content: prompt }],
+      { model: coaching.model, think: false, num_predict: 800, temperature: 0.4, timeout: 60000 });
+  } catch { return null; }
+  const clean = out.replace(/^["'\s]+|["'\s]+$/g, '');
+  if (!clean || clean.replace(/[^A-Za-z]/g, '').toUpperCase() === 'QUIET') return null;
+  coaching.lastNudgeAt = Date.now();
+  coaching.lastNudge = clean;
+  return clean;
 }
 
 // Installed models that look like vision models, for the picker (falls back to all).
@@ -993,12 +1081,44 @@ app.post('/api/awareness/observe', async (req, res) => {
       await appendFile(AWARENESS_FILE,
         JSON.stringify({ at: new Date().toISOString(), note, sensitive }) + '\n', 'utf8').catch(() => {});
     }
-    res.json({ note, at: awareness.latestAt, sensitive });
+    // proactive coaching rides along on the glance — null unless KAEL has something
+    // worth saying right now (and isn't in its cooldown)
+    let coach = null;
+    if (!sensitive) { try { coach = await coachCheck(); } catch { /* coaching never breaks a glance */ } }
+    res.json({ note, at: awareness.latestAt, sensitive, coach });
   } catch (err) {
     res.status(502).json({ error: `Vision model failed: ${err.message}` });
   } finally {
     observing = false;
   }
+});
+
+// Proactive coaching settings (enabled / focus goal / intensity / coach model).
+app.get('/api/coach', async (_req, res) => {
+  res.json({
+    enabled: coaching.enabled, goal: coaching.goal, intensity: coaching.intensity,
+    model: coaching.model, models: await installedModels(), lastNudge: coaching.lastNudge,
+  });
+});
+app.post('/api/coach', async (req, res) => {
+  const b = req.body || {};
+  let changed = false;
+  if ('enabled' in b) { coaching.enabled = b.enabled === true; changed = true; }
+  if ('goal' in b) {
+    coaching.goal = String(b.goal ?? '').trim().slice(0, 300);
+    coaching.lastNudgeAt = 0; coaching.lastNudge = '';   // a fresh focus → may coach again soon
+    changed = true;
+  }
+  if ('intensity' in b && ['chill', 'balanced', 'strict'].includes(b.intensity)) { coaching.intensity = b.intensity; changed = true; }
+  if ('model' in b && typeof b.model === 'string' && b.model) {
+    const models = await installedModels();
+    if (!models.some((n) => n === b.model || n.startsWith(`${b.model}:`))) {
+      return res.status(400).json({ error: `Model "${b.model}" is not installed.` });
+    }
+    coaching.model = b.model; changed = true;
+  }
+  if (changed) saveConfig();
+  res.json({ enabled: coaching.enabled, goal: coaching.goal, intensity: coaching.intensity, model: coaching.model });
 });
 
 // Recent activity notes (the awareness log), newest last.
