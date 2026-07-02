@@ -152,6 +152,8 @@
     .msg-act { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 1px 4px; border-radius: 5px; font: inherit; letter-spacing: .5px; opacity: 0; transition: opacity .15s, color .15s; }
     .msg:hover .msg-act { opacity: .7; }
     .msg-act:hover { color: var(--accent); opacity: 1; }
+    /* keyboard users get the same reveal hover users do */
+    .msg-act:focus-visible { opacity: 1; color: var(--accent); outline: 1px solid var(--accent); outline-offset: 2px; }
     .msg-ts { opacity: .5; letter-spacing: .5px; }
     /* on-screen markdown rendering */
     .bubble a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
@@ -545,6 +547,7 @@
     <div class="brand"><h1><span class="k">K</span>AEL</h1><small>voice command hub</small></div>
     <span class="spacer"></span>
     <button class="ghost-btn" id="brainBtn" title="AI backend">⚡ local</button>
+    <button class="ghost-btn icon-only" id="muteBtn" title="Voice output on — click to mute">🔊</button>
     <button class="ghost-btn icon-only" id="settingsBtn" title="Settings (voice &amp; push-to-talk key)">⚙</button>
     <button class="ghost-btn" id="newChat">new chat</button>
   </header>
@@ -690,7 +693,7 @@
           </select>
           <select id="coachModel" title="Proactive brain"></select>
         </div>
-        <span class="hint">KAEL speaks up <b>on its own</b> — greetings, observations, check-ins, encouragement — based on what it sees you doing, not only when you talk to it. It <b>picks up your focus automatically</b> from what you tell it during the day (just say or type <i>“I'm gonna work on the kael project”</i> and it sets the focus itself) — or type one in the box above. With a focus, it also keeps you on track (nudges drift, suggests breaks, offers help when you're stuck). <b>Needs awareness on.</b> The <b>brain</b> reasons over your activity timeline (and, for auto-focus, your message) — the small local model is too weak to judge this, so it defaults to your <b>gpt-oss cloud</b> model, meaning that text goes to it for the decision. Pick a local model for full privacy (but it'll rarely speak).</span>
+        <span class="hint">KAEL speaks up <b>on its own</b> — greetings, observations, check-ins, encouragement — based on what it sees you doing, not only when you talk to it. It <b>picks up your focus automatically</b> from what you tell it during the day (just say or type <i>“I'm gonna work on the kael project”</i> and it sets the focus itself) — or type one in the box above. With a focus, it also keeps you on track (nudges drift, suggests breaks, offers help when you're stuck). <b>Needs awareness on.</b> The <b>brain</b> reasons over your activity timeline, the soft webcam mood read, and (for auto-focus) your message — the small local model is too weak to judge this, so it defaults to your <b>gpt-oss cloud</b> model, meaning that text goes to it for the decision. Pick a local model for full privacy (but it'll rarely speak). With Proactive <b>off</b>, nothing here ever goes to the cloud model — task capture from chat runs on the local model instead.</span>
       </div>
 
       <div class="setting-row">
@@ -725,6 +728,7 @@
     const hdot = document.getElementById('hdot');
     const newChatBtn = document.getElementById('newChat');
     const brainBtn = document.getElementById('brainBtn');
+    const muteBtn = document.getElementById('muteBtn');
     const settingsBtn = document.getElementById('settingsBtn');
     const settingsOverlay = document.getElementById('settingsOverlay');
     const settingsClose = document.getElementById('settingsClose');
@@ -810,7 +814,7 @@
       stage.dataset.state = s;
       hdot.classList.toggle('live', s === 'listening' || s === 'speaking' || s === 'thinking');
       talkBtn.classList.toggle('active', s === 'listening');
-      stopBtn.disabled = s !== 'speaking';
+      stopBtn.disabled = !(s === 'speaking' || s === 'thinking');   // a stuck "thinking" is cancellable too
       const labels = { idle: holdHint(), listening: 'listening…', thinking: 'thinking…', speaking: 'speaking…' };
       statusEl.textContent = labels[s] || '';
       if (s !== 'listening') interimEl.textContent = '';
@@ -901,10 +905,15 @@
       if (!pttActive) { setState('idle'); return; }
       earcon('close');
       if (!recognizing) {
-        // released before the engine actually started (a too-quick tap) → just reset.
+        // released before the engine started (a too-quick tap, or mid auto-restart
+        // between onend and onstart) → send whatever this hold already captured
+        // instead of silently losing it.
         pttActive = false;
-        setState('idle');
         try { recognition.abort(); } catch {}
+        const text = pttTranscript.trim();
+        pttTranscript = '';
+        if (text) handleUtterance(text);
+        else setState('idle');
         return;
       }
       try { recognition.stop(); }       // graceful stop → onend finalizes & sends
@@ -1094,6 +1103,10 @@
     window.addEventListener('auxclick', (e) => {
       if (pttBinding.type === 'mouse' && e.button === pttBinding.button) e.preventDefault();
     }, true);
+    // If the window loses focus while the key is held, its keyup lands elsewhere and
+    // the mic would latch on — treat focus loss as a release.
+    window.addEventListener('blur', () => { if (pttHeld) pttUp(); });
+    document.addEventListener('visibilitychange', () => { if (document.hidden && pttHeld) pttUp(); });
     window.addEventListener('contextmenu', (e) => {
       if (capturing || (pttBinding.type === 'mouse' && pttBinding.button === 2)) e.preventDefault();
     }, true);
@@ -1165,6 +1178,7 @@
     testVoiceBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       if (!canSpeak) return;
+      muteMicForSpeech();   // open-mic must not hear the test line
       TTS.cancel();
       const u = new SpeechSynthesisUtterance("Hi, I'm Kael. This is how I sound now — smoother, I hope.");
       if (voice) u.voice = voice;
@@ -1221,6 +1235,7 @@
     testPremiumBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
       stopSpeaking();
+      muteMicForSpeech();   // open-mic must not hear the test line
       try {
         const r = await fetch('/api/tts', {
           method: 'POST',
@@ -1265,10 +1280,13 @@
       gen: 0,
       chain: Promise.resolve(),
       current: null,             // the HTMLAudioElement playing right now
+      currentUrl: null,          // its blob URL (revoked on end OR cancel)
+      currentSrc: null,          // its analyser tap (disconnected on end OR cancel)
       aborts: new Set(),         // in-flight fetch controllers
 
       speak(text) {
         const gen = this.gen;
+        const sgen = speechGen;   // guards the shared counter, like the browser-voice path
         const ac = new AbortController();
         this.aborts.add(ac);
         utterancesPending++;
@@ -1293,15 +1311,22 @@
           catch { if (gen === this.gen) premiumFailedOnce(); return; }   // aborts are silent (gen changed)
           if (gen !== this.gen) { URL.revokeObjectURL(url); return; }
           await this.playClip(url);
-        }).finally(() => { utterancesPending--; maybeFinishSpeaking(); });
+        }).finally(() => { if (sgen === speechGen) { utterancesPending--; maybeFinishSpeaking(); } });
       },
 
       playClip(url) {
         return new Promise((resolve) => {
           const a = new Audio(url);
           this.current = a;
+          this.currentUrl = url;
           const src = Viz.tapElement(a);   // route through the analyser so the orb reacts to KAEL's voice
-          const done = () => { try { if (src) src.disconnect(); } catch {} URL.revokeObjectURL(url); if (this.current === a) this.current = null; resolve(); };
+          this.currentSrc = src;
+          const done = () => {
+            try { if (src) src.disconnect(); } catch {}
+            URL.revokeObjectURL(url);
+            if (this.current === a) { this.current = null; this.currentUrl = null; this.currentSrc = null; }
+            resolve();
+          };
           a.onended = done;
           a.onerror = done;
           a.play().catch(done);
@@ -1309,19 +1334,39 @@
       },
 
       // Barge-in / stop: drop everything queued and silence the current clip.
+      // pause() fires neither ended nor error, so release the clip's blob URL and
+      // analyser node here — otherwise every barge-in leaked both until reload.
       cancel() {
         this.gen++;
         for (const ac of this.aborts) { try { ac.abort(); } catch {} }
         this.aborts.clear();
-        if (this.current) { try { this.current.pause(); } catch {} this.current = null; }
+        if (this.current) {
+          try { this.current.pause(); } catch {}
+          try { if (this.currentSrc) this.currentSrc.disconnect(); } catch {}
+          if (this.currentUrl) URL.revokeObjectURL(this.currentUrl);
+          this.current = null; this.currentUrl = null; this.currentSrc = null;
+        }
         this.chain = Promise.resolve();
       },
     };
 
     // Stop ALL speech — both the browser synth and the premium player.
     function stopSpeaking() {
+      speechGen++;             // stale utterance callbacks can no longer touch the counter
+      utterancesPending = 0;
       if (canSpeak) TTS.cancel();
       Premium.cancel();
+    }
+
+    // KAEL is about to speak OUTSIDE a normal turn (nudge, replay, voice test,
+    // mode announcement): in open-mic the recognizer is still live and would
+    // transcribe KAEL's own voice and auto-send it as a user message — go deaf
+    // first. backToReady() re-arms the mic when the speech finishes.
+    function muteMicForSpeech() {
+      clearTimeout(openSilenceTimer);
+      openBuffer = '';
+      if (openMicActive) { openMicActive = false; try { recognition.abort(); } catch {} }
+      else if (recognizing && !pttActive) { try { recognition.abort(); } catch {} }
     }
 
     // ---- Audio-reactive orb visualizer ----------------------------------
@@ -1697,11 +1742,18 @@
     let ttsBuffer = '';
     let utterancesPending = 0;
     let streamDone = false;
+    // Bumped by stopSpeaking(): cancelled utterances still fire their onend/onerror
+    // callbacks, which used to decrement the NEXT turn's counter below zero and flip
+    // KAEL to idle while it was still audibly speaking.
+    let speechGen = 0;
+    // Voice-off toggle (🔇 in the header) — replies stay on screen, nothing is spoken.
+    let voiceMuted = (() => { try { return localStorage.getItem('kael.mute') === '1'; } catch { return false; } })();
 
     // Speak one sentence with whichever engine is active. Premium when it's
     // enabled AND available; otherwise the free browser voice.
     function speakSentence(text) {
       if (!text) return;
+      if (voiceMuted) { maybeFinishSpeaking(); return; }   // text-only; let the turn settle normally
       if (ttsMode === 'premium' && premiumAvailable) { Premium.speak(text); return; }
       if (!canSpeak) return;
       const u = new SpeechSynthesisUtterance(text);
@@ -1709,9 +1761,10 @@
       u.rate = SPEAK_RATE;
       u.pitch = SPEAK_PITCH;
       if (voice) u.voice = voice;
+      const gen = speechGen;
       utterancesPending++;
       setState('speaking');
-      u.onend = u.onerror = () => { utterancesPending--; maybeFinishSpeaking(); };
+      u.onend = u.onerror = () => { if (gen === speechGen) { utterancesPending--; maybeFinishSpeaking(); } };
       TTS.speak(u);
     }
 
@@ -1794,7 +1847,9 @@
     function replayMessage(text) {
       if (!text) return;
       stopSpeaking();
+      if (voiceMuted) { flashBrainNote('voice is muted'); return; }
       if (!(canSpeak || (ttsMode === 'premium' && premiumAvailable))) return;
+      muteMicForSpeech();   // open-mic must not hear the replay
       streamDone = true; utterancesPending = 0;
       (text.match(/[^.!?…]+[.!?…]*/g) || [text]).forEach((s) => { const t = s.trim(); if (t) speakSentence(t); });
     }
@@ -1830,6 +1885,9 @@
       wrap.appendChild(acts);
 
       log.appendChild(wrap);
+      // an always-on session must not accumulate DOM forever — the full history
+      // still lives in transcript.jsonl on the server
+      while (log.children.length > 200) log.removeChild(log.firstChild);
       log.scrollTop = log.scrollHeight;
       return bubble;
     }
@@ -1863,7 +1921,8 @@
     function announce(text) {
       streamDone = true;
       utterancesPending = 0;
-      if (canSpeak || (ttsMode === 'premium' && premiumAvailable)) speakSentence(text);
+      muteMicForSpeech();   // don't let open-mic transcribe the confirmation itself
+      if (!voiceMuted && (canSpeak || (ttsMode === 'premium' && premiumAvailable))) speakSentence(text);
       else backToReady();
     }
     let recBadge = null;
@@ -1940,14 +1999,17 @@
       premiumWarnedThisTurn = false;
       stopSpeaking();
       if (abortController) { try { abortController.abort(); } catch {} }   // interrupt any previous turn
-      abortController = new AbortController();
+      // Own the controller locally: an interrupted OLD turn's catch/finally fires
+      // asynchronously and must not clobber the NEW turn's controller or state.
+      const ctrl = new AbortController();
+      abortController = ctrl;
 
       try {
         const resp = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message }),
-          signal: abortController.signal,
+          signal: ctrl.signal,
         });
 
         if (!resp.ok) {
@@ -2002,7 +2064,9 @@
       } catch (err) {
         streamDone = true;
         if (err.name === 'AbortError') {
-          backToReady();
+          // only settle back to ready if no NEWER turn has taken over — otherwise
+          // this would re-arm the open mic in the middle of the new reply
+          if (abortController === ctrl) backToReady();
           return;
         }
         // the bubble may have been detached if the log was cleared mid-turn
@@ -2012,9 +2076,28 @@
         bubble.textContent = bubble._raw;
         backToReady();
       } finally {
-        abortController = null;
+        if (abortController === ctrl) abortController = null;   // only if still ours
       }
     }
+
+    // ---- mute toggle (replies stay on screen, voice goes quiet) ----
+    function applyMuteUI() {
+      muteBtn.textContent = voiceMuted ? '🔇' : '🔊';
+      muteBtn.title = voiceMuted ? 'Voice output muted — click to unmute' : 'Voice output on — click to mute';
+    }
+    muteBtn.addEventListener('click', () => {
+      voiceMuted = !voiceMuted;
+      try { localStorage.setItem('kael.mute', voiceMuted ? '1' : '0'); } catch {}
+      if (voiceMuted) {
+        stopSpeaking();
+        // mid-stream: fall back to "thinking" (text still arriving); otherwise settle
+        if (!streamDone && state === 'speaking') setState('thinking');
+        else maybeFinishSpeaking();
+      }
+      applyMuteUI();
+      flashBrainNote(voiceMuted ? 'voice muted — replies are text-only' : 'voice on');
+    });
+    applyMuteUI();
 
     // ---- controls ----
     stopBtn.addEventListener('click', () => {
@@ -2068,9 +2151,13 @@
       if (open) { populateVoiceSelect(); updateBindingUI(); if (micModeSelect) micModeSelect.value = micMode; loadSettingsPanel(); }
       else if (capturing) endCapture();
     });
-    settingsClose.addEventListener('click', () => { if (capturing) endCapture(); settingsOverlay.classList.remove('open'); });
-    settingsOverlay.addEventListener('click', (e) => {
-      if (e.target === settingsOverlay) { if (capturing) endCapture(); settingsOverlay.classList.remove('open'); }
+    function closeSettings() { if (capturing) endCapture(); settingsOverlay.classList.remove('open'); }
+    settingsClose.addEventListener('click', closeSettings);
+    settingsOverlay.addEventListener('click', (e) => { if (e.target === settingsOverlay) closeSettings(); });
+    // standard Esc-to-dismiss (rebind capture consumes Escape first — its handler
+    // runs in the capture phase and stops propagation)
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && settingsOverlay.classList.contains('open')) closeSettings();
     });
 
     // ---- control panel: model / temperature / persona / memory ----
@@ -2128,7 +2215,11 @@
         const r = await postConfig({ model: modelSelect.value });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) { flashBrainNote(d.error || 'could not switch model'); loadSettingsPanel(); }
-        else flashBrainNote('model → ' + d.model);
+        else {
+          flashBrainNote('model → ' + d.model);
+          providerModels.ollama = d.model || providerModels.ollama;
+          if (currentProvider === 'ollama') setProviderLabel('ollama');   // keep the header truthful
+        }
       } catch { flashBrainNote('could not reach the server'); }
     });
     tempRange.addEventListener('input', () => { tempVal.textContent = tempRange.value; });
@@ -2177,6 +2268,12 @@
         awareBadge.innerHTML = '<span class="dot"></span> awareness paused — resume';
         awareBadge.title = 'Click to resume watching';
         awareBadge.onclick = () => Awareness.start();
+        awareBadge.style.display = 'flex';
+      } else if (mode === 'stalled') {
+        awareBadge.classList.add('paused');   // reuse the amber style
+        awareBadge.innerHTML = '<span class="dot"></span> awareness stalled — click to retry';
+        awareBadge.title = 'Glances are failing (is Ollama running?). Click to retry now.';
+        awareBadge.onclick = () => Awareness.glance();
         awareBadge.style.display = 'flex';
       } else {
         awareBadge.style.display = 'none';
@@ -2243,6 +2340,7 @@
     const Awareness = {
       enabled: false, intervalMs: 300000, model: '',
       stream: null, video: null, timer: null, busy: false, firstGlance: true, startSeq: 0,
+      fails: 0, lastNote: '',   // consecutive glance failures + last good note (for neutral skips)
 
       async start() {
         if (this.enabled) return;
@@ -2339,12 +2437,39 @@
             body: JSON.stringify(body), signal: ctrl.signal,
           });
           if (r.ok) {
-            const d = await r.json();
-            if (d && d.note) { setAwareStatus(d.note, 'seen ' + fmtTime(d.at), d.note); this.firstGlance = false; loadAwarenessLog(); }
+            const d = await r.json().catch(() => null);
+            if (d && d.note) {
+              if (this.fails >= 2) setAwareBadge('on');   // recovered — stop saying "stalled"
+              this.fails = 0; this.lastNote = d.note;
+              setAwareStatus(d.note, 'seen ' + fmtTime(d.at) + (d.mood ? ' · ' + d.mood : ''), d.note);
+              this.firstGlance = false; loadAwarenessLog();
+            } else if (d && d.skipped) {
+              // busy / throttled / chat in progress — neutral, don't sit on "looking…"
+              if (this.lastNote) setAwareStatus(this.lastNote, 'glance skipped (' + d.skipped + ')', this.lastNote);
+            }
             if (d && d.coach) speakCoachNudge(d.coach);   // proactive nudge rides along on the glance
+          } else {
+            const e = await r.json().catch(() => ({}));
+            this.fail(e.error || ('glance failed (' + r.status + ')'));
           }
-        } catch { /* transient / timeout — the next glance retries */ }
+        } catch (err) {
+          this.fail(err && err.name === 'AbortError'
+            ? 'glance timed out — is Ollama running?'
+            : 'could not reach the KAEL server');
+        }
         finally { clearTimeout(to); this.busy = false; }
+      },
+
+      // A failing pipeline must never be invisible: after two failures in a row
+      // the badge stops claiming "KAEL is watching" and says it's stalled. (This
+      // is exactly how the log once went silently stale for days.)
+      fail(msg) {
+        this.fails++;
+        setAwareStatus('⚠ ' + msg, fmtTime(Date.now()));
+        if (this.fails === 2) {
+          setAwareBadge('stalled');
+          flashBrainNote('awareness stalled — ' + msg);
+        }
       },
     };
 
@@ -2356,6 +2481,12 @@
           const item = document.createElement('div'); item.className = 'aware-log-item';
           const t = document.createElement('span'); t.className = 't'; t.textContent = fmtTime(Date.parse(n.at));
           item.appendChild(t); item.append(n.note);
+          if (n.mood) {
+            const m = document.createElement('span');
+            m.textContent = ' · ' + n.mood;
+            m.style.cssText = 'color:var(--accent);opacity:.85;font-style:italic;';
+            item.appendChild(m);
+          }
           awareLog.appendChild(item);
         });
       } catch { /* no log yet */ }
@@ -2417,11 +2548,14 @@
     }
     // Speak a proactive nudge (and show it), but never interrupt a real conversation turn.
     function speakCoachNudge(text) {
-      if (!text || state === 'thinking' || state === 'speaking') return;
+      if (!text || state === 'thinking' || state === 'speaking' || pttActive) return;
       const b = addMessage('kael', 'KAEL', text);
       finalizeBubble(b);
-      stopSpeaking(); streamDone = true;
+      stopSpeaking();
+      muteMicForSpeech();   // open-mic must not transcribe KAEL's own nudge
+      streamDone = true;
       speakSentence(text);
+      if (voiceMuted) backToReady();
     }
     function postCoach(body) {
       return fetch('/api/coach', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -2519,21 +2653,44 @@
 
     // ---- backend switch (free local model ⇄ Claude) ----
     let currentProvider = 'ollama';
+    let providerModels = { ollama: '', claude: '' };   // filled from /api/provider
     function setProviderLabel(p) {
       currentProvider = p;
       const claude = p === 'claude';
-      brainBtn.textContent = claude ? '✦ claude' : '⚡ local';
-      brainBtn.title = claude
+      // show WHICH brain, not just which kind — the model name is already in
+      // every /api/provider response
+      const model = claude ? providerModels.claude : providerModels.ollama;
+      let short = model ? model.replace(/:latest$/, '').split('/').pop() : '';
+      if (short.length > 18) short = short.slice(0, 17) + '…';
+      brainBtn.textContent = (claude ? '✦ ' : '⚡ ') + (short || (claude ? 'claude' : 'local'));
+      brainBtn.title = (claude
         ? 'Backend: Claude (uses your API tokens). Click for the free local model.'
-        : 'Backend: free local model via Ollama. Click to switch to Claude.';
+        : 'Backend: free local model via Ollama. Click to switch to Claude.')
+        + (model ? ' Current model: ' + model : '');
       brainBtn.classList.toggle('claude', claude);
     }
     let brainNoteTimer = null;
+    let noteToast = null;
     function flashBrainNote(text) {
+      // the settings overlay (z-index 10) covers the interim line — surface
+      // feedback in a floating toast too, or confirmations/errors are invisible
+      if (settingsOverlay.classList.contains('open')) {
+        if (!noteToast) {
+          noteToast = document.createElement('div');
+          noteToast.style.cssText = 'position:fixed;bottom:26px;left:50%;transform:translateX(-50%);z-index:100;' +
+            'background:rgba(13,18,24,.95);border:1px solid rgba(94,234,212,.4);color:var(--accent);' +
+            'font:600 12px/1 var(--mono);letter-spacing:.5px;padding:9px 16px;border-radius:999px;' +
+            'box-shadow:0 8px 30px rgba(0,0,0,.5);pointer-events:none;display:none;';
+          document.body.appendChild(noteToast);
+        }
+        noteToast.textContent = text;
+        noteToast.style.display = 'block';
+      }
       interimEl.textContent = '· ' + text + ' ·';
       clearTimeout(brainNoteTimer);
       brainNoteTimer = setTimeout(() => {
         if (state === 'idle') interimEl.textContent = '';
+        if (noteToast) noteToast.style.display = 'none';
       }, 2600);
     }
     brainBtn.addEventListener('click', async () => {
@@ -2556,7 +2713,10 @@
     });
     (async () => {
       const d = await fetchJSONRetry('/api/provider');
-      if (d && d.provider) setProviderLabel(d.provider);
+      if (d && d.provider) {
+        providerModels = { ollama: d.ollamaModel || '', claude: d.claudeModel || '' };
+        setProviderLabel(d.provider);
+      }
     })();
 
     // Restore the on-screen conversation from server memory so it survives reloads
@@ -2576,7 +2736,21 @@
     // leave the user thinking it's watching when it isn't).
     (async () => {
       const a = await fetchJSONRetry('/api/awareness', { tries: 3, delay: 800 });
-      if (a && a.enabled && !Awareness.enabled) setAwareBadge('paused');
+      if (!a) return;
+      // adopt the SAVED cadence/model now — resuming from the badge used to run at
+      // the hardcoded 5-min default until the settings panel was first opened
+      if (typeof a.intervalMs === 'number') Awareness.intervalMs = a.intervalMs;
+      if (a.model) Awareness.model = a.model;
+      if (a.enabled && !Awareness.enabled) setAwareBadge('paused');
+    })();
+
+    // Surface "Ollama isn't running" / "model not pulled" at startup, instead of
+    // letting the first turn fail mysteriously after the user talks to the void.
+    (async () => {
+      const h = await fetchJSONRetry('/api/health', { tries: 2, delay: 800 });
+      if (!h || h.provider !== 'ollama' || !h.ollama) return;
+      if (!h.ollama.up) interimEl.textContent = '⚠ Ollama isn\'t running — start the Ollama app so KAEL can think.';
+      else if (!h.ollama.modelInstalled) interimEl.textContent = '⚠ Model "' + h.ollama.model + '" isn\'t pulled — run: ollama pull ' + h.ollama.model;
     })();
 
     // ---- text fallback ----
@@ -2585,7 +2759,13 @@
     sendBtn.addEventListener('click', submitText);
     function submitText() {
       const text = input.value.trim();
-      if (!text || state === 'thinking' || state === 'speaking') return;
+      if (!text) return;
+      // typing is a barge-in too: sending mid-reply cancels the current turn
+      // (newest wins), matching how holding the talk key interrupts speech
+      if (state === 'thinking' || state === 'speaking') {
+        stopSpeaking();
+        if (abortController) { try { abortController.abort(); } catch {} }
+      }
       input.value = ''; input.style.height = 'auto';
       handleUtterance(text);
     }

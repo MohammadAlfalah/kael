@@ -5,7 +5,7 @@
 // and listening capture must hit the live server). The static app shell is
 // network-first so code changes show on the next load, with a cache fallback so
 // the window still opens if the server is momentarily down (e.g. mid-restart).
-const CACHE = 'kael-shell-v1';
+const CACHE = 'kael-shell-v2';
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (event) => {
@@ -32,8 +32,12 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     fetch(req)
       .then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+        // only cache GOOD responses — caching a 404/500 would make the offline
+        // fallback serve an error page instead of the last working shell
+        if (res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+        }
         return res;
       })
       .catch(() => caches.match(req).then((m) => m || caches.match('/')))

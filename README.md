@@ -12,7 +12,7 @@ The whole front end is one `public/index.html` — plain HTML/CSS/vanilla JS, no
 - **Speaks its replies, and starts speaking early.** Answers are tuned short (one to three sentences, since they're read aloud) and stream sentence-by-sentence so there's no dead pause. It picks the best neural browser voice by default; drop in an OpenAI key and Settings unlocks `tts-1-hd` neural TTS (the key stays server-side — the browser only gets audio).
 - **Web search with no setup.** When a question needs current info it searches on its own. It falls back to a free DuckDuckGo scrape so search works with zero config; add a Brave Search API key for sharper results and higher limits.
 - **Persistent memory.** It remembers across restarts and reboots — a profile of durable facts plus a rolling summary of older chats, written to disk under `data/` (gitignored). The summarizing runs on the free local model, so it costs no tokens and stays private. Only a bounded window + the summary ever goes to the model, so context never overflows.
-- **Ambient awareness (off by default).** It can glance at a screen I share plus a quick webcam frame every few minutes, run them through a **local** vision model (`qwen2.5vl:3b`), and keep a one-line note of what I'm doing — so it has real context. Frames go only to the local model, no images are ever saved, sensitive screens get auto-skipped, and it flat-out refuses a non-local Ollama URL.
+- **Ambient awareness (off by default).** It can glance at a screen I share plus a quick webcam frame every few minutes, run them through a **local** vision model (`qwen2.5vl:3b`), and keep a one-line note of what I'm doing — so it has real context. Frames go only to the local model and are never saved (unless you explicitly opt in to training-data collection, which stores screenshots locally under `data/training/`), and it flat-out refuses to send frames anywhere remote — both non-local Ollama URLs and Ollama's `*-cloud` models are blocked. I removed the sensitive-screen auto-skip on purpose: it describes whatever is on my screen, my choice.
 - **Proactive coaching.** Tell it what I'm focusing on and it watches my activity against that, speaking up *sparingly* when I drift or grind too long. A cooldown keeps it from nagging.
 - **Conversational task manager.** Mention a task in chat ("finish X by Friday, email my prof tonight") and it captures both with deadlines, prioritizes them, breaks them into steps, and answers "what should I work on?" from the list.
 - **A 3D orb.** The status indicator is a WebGL energy core (Three.js) that reacts to listening / thinking / speaking, with a 2D fallback when WebGL isn't available.
@@ -64,6 +64,7 @@ Everything is optional:
 | `AWARENESS_MODEL` | Local vision model for ambient awareness (default `qwen2.5vl:3b`). |
 | `KAEL_TIMEZONE` | IANA zone it's time-aware of (default `Europe/Berlin`). |
 | `PORT` | Default `3000`. |
+| `KAEL_HOST` | Bind address (default `127.0.0.1` — localhost only, since there's no auth). Set `0.0.0.0` to reach it from other devices, accepting that trade. |
 
 The top-right pill (⚡ local / ✦ claude) flips backends live — no restart.
 
@@ -73,7 +74,7 @@ There's a full vision fine-tuning pipeline in [`scripts/finetune/`](scripts/fine
 
 ## Honest limitations
 
-- Single-user, no auth — run it locally or behind your own access control, don't expose it publicly with your keys.
+- Single-user, no auth — it binds to `127.0.0.1` by default for exactly that reason. If you open it up with `KAEL_HOST=0.0.0.0`, everyone on your network can read its memory and use your keys.
 - Live mic input needs a Chromium browser (Web Speech API). Other browsers get spoken replies + the text box only.
 - The local 3B model is great for chat but the coaching *judgment* really wants a stronger model to tell drift from focus; you can point that at a cloud model in Settings (which then sees activity *summaries*, never screenshots) or keep it fully local.
 
