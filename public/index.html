@@ -707,6 +707,32 @@
         <span class="hint">KAEL captures tasks <b>automatically</b> when you mention them in chat (<i>“I need to finish X by Friday”</i>), prioritizes them by urgency &amp; deadline, and can <b>break</b> any task into steps. Tick to complete a task or a step; ask KAEL <i>“what should I work on?”</i> anytime and it answers from this list.</span>
       </div>
 
+      <div class="setting-row">
+        <span class="label">Reminders &amp; routines <span class="muted-count" id="schedCount"></span></span>
+        <div class="task-list" id="schedList"></div>
+        <div class="row" style="margin-top:8px; flex-wrap:wrap;">
+          <input id="schedText" type="text" class="coach-goal" placeholder="Remind me to…" maxlength="200" style="flex:1; min-width:140px;">
+          <input id="schedWhen" type="datetime-local" class="coach-goal" style="flex:0 1 auto;">
+          <button class="mini-btn" id="schedAdd">Add</button>
+        </div>
+        <span class="hint">One-off reminders and routines that fire <b>out loud on every connected device</b> — even if you set them from your phone. KAEL also picks them up from chat: just say <i>“remind me at 5pm to email my prof”</i>. Reminders missed while KAEL was off are skipped with a note, not blurted late.</span>
+      </div>
+
+      <div class="setting-row">
+        <span class="label">Permissions</span>
+        <div class="row" id="permGrid" style="margin-top:6px; gap:12px 18px; flex-wrap:wrap;"></div>
+        <span class="hint">KAEL's capability switchboard. Flip anything off and it stays off <b>everywhere</b> — enforced by the server, not just this window. Everything is ON by default (same behavior as before this existed).</span>
+      </div>
+
+      <div class="setting-row">
+        <span class="label">Devices <span class="muted-count" id="deviceCount"></span></span>
+        <div class="aware-status" id="pairInfo">Checking…</div>
+        <div class="row" style="margin-top:6px;">
+          <button class="mini-btn" id="pairCopy" style="display:none;">Copy pairing link</button>
+        </div>
+        <span class="hint">Use KAEL from your phone or tablet on the same Wi-Fi: open the pairing link there, then <b>Add to Home Screen</b> — it installs as a full-screen app and stays paired. Needs <span class="md-code">KAEL_HOST=0.0.0.0</span> in <span class="md-code">.env</span> (the token keeps strangers out).</span>
+      </div>
+
       <div class="row" style="justify-content:flex-end;">
         <button class="mini-btn" id="settingsClose">Done</button>
       </div>
@@ -714,6 +740,51 @@
   </div>
 
   <script>
+    // ---- device token (pairing) ----
+    // On the PC (localhost) none of this does anything — the server trusts local
+    // requests. On a phone/tablet the pairing link carries ?token=…: grab it,
+    // keep it, strip it from the URL bar, and send it on every /api/ call (the
+    // server also sets a cookie so the event stream and reloads keep working).
+    // A 401 anywhere = not paired → show the gate instead of failing silently.
+    let deviceToken = '';
+    try {
+      const u = new URL(location.href);
+      const t = u.searchParams.get('token');
+      if (t) { localStorage.setItem('kael.token', t); u.searchParams.delete('token'); history.replaceState(null, '', u.pathname + u.search + u.hash); }
+      deviceToken = localStorage.getItem('kael.token') || '';
+    } catch { /* privacy mode etc. — proceed tokenless */ }
+    const _rawFetch = window.fetch.bind(window);
+    window.fetch = (url, opts) => {
+      opts = opts || {};
+      try {
+        if (deviceToken && typeof url === 'string' && url.startsWith('/api/')) {
+          opts.headers = Object.assign({}, opts.headers, { 'X-KAEL-Token': deviceToken });
+        }
+      } catch {}
+      return _rawFetch(url, opts).then((res) => {
+        if (res.status === 401 && typeof url === 'string' && url.startsWith('/api/')) showPairGate();
+        return res;
+      });
+    };
+    function showPairGate() {
+      if (document.getElementById('pairGate')) return;
+      const gate = document.createElement('div');
+      gate.id = 'pairGate';
+      gate.style.cssText = 'position:fixed;inset:0;z-index:99;display:flex;align-items:center;justify-content:center;background:rgba(4,6,9,.92);backdrop-filter:blur(6px);';
+      gate.innerHTML = '<div style="max-width:340px;padding:28px;border:1px solid var(--border);border-radius:14px;background:var(--panel);text-align:center;">'
+        + '<h2 style="margin:0 0 6px;color:var(--accent);">Pair this device</h2>'
+        + '<p style="color:var(--muted);font-size:.9rem;margin:0 0 14px;">This device isn\'t paired with KAEL yet. On the PC, open <b>Settings → Devices</b> and use the pairing link there — or paste the token below.</p>'
+        + '<input id="pairInput" type="text" placeholder="device token" style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);margin-bottom:10px;">'
+        + '<button id="pairSave" class="mini-btn" style="width:100%;">Pair</button></div>';
+      document.body.appendChild(gate);
+      gate.querySelector('#pairSave').addEventListener('click', () => {
+        const v = gate.querySelector('#pairInput').value.trim();
+        if (!v) return;
+        try { localStorage.setItem('kael.token', v); } catch {}
+        location.reload();
+      });
+    }
+
     // ---- elements ----
     const stage = document.getElementById('stage');
     const statusEl = document.getElementById('status');
@@ -1972,6 +2043,11 @@
         return;
       }
 
+      // "plan: X" / "make a plan to X" → the planner engine (decomposes into
+      // search/task/remind steps and runs them), not a plain chat turn
+      const planMatch = message.match(/^\s*(?:kael[,\s]+)?(?:plan[:,]\s|make a plan (?:to|for)\s)(.+)$/i);
+      if (planMatch && planMatch[1].trim().length >= 3) { runPlan(planMatch[1].trim()); return; }
+
       // "I'm working on X" / "set my focus to X" → set the coaching focus by voice
       const focusMatch = message.match(/^\s*(?:kael[,\s]+)?(?:i'?m\s+(?:now\s+|gonna\s+|going to\s+)?(?:working on|focusing on)|set (?:my )?focus (?:to|on)|my focus (?:is|will be)(?: now)?|let'?s\s+(?:work on|focus on))\s+(.+?)\s*[.!]*\s*$/i);
       if (focusMatch && focusMatch[1].trim().length >= 2) {
@@ -2180,6 +2256,9 @@
       loadAwarenessPanel();
       loadCoachPanel();
       loadTasksPanel();
+      loadSchedulesPanel();
+      loadPermissionsPanel();
+      loadDevicesPanel();
     }
     async function loadMemoryBox() {
       let mem;
@@ -2344,6 +2423,10 @@
 
       async start() {
         if (this.enabled) return;
+        if (perms.awareness === false || perms.screen === false) {
+          flashBrainNote('awareness / screen watching is switched off in Permissions');
+          return;
+        }
         const myStart = ++this.startSeq;   // so a Stop during the share prompt cancels this start
         let stream;
         try {
@@ -2397,6 +2480,7 @@
 
       // briefly open the webcam, snap one frame, release it (the camera light blinks)
       async grabWebcam() {
+        if (perms.webcam === false) return null;   // switched off in Permissions → screen-only glance
         let stream;
         try { stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false }); }
         catch { return null; }   // no camera / denied / backgrounded → screen-only glance
@@ -2549,6 +2633,7 @@
     // Speak a proactive nudge (and show it), but never interrupt a real conversation turn.
     function speakCoachNudge(text) {
       if (!text || state === 'thinking' || state === 'speaking' || pttActive) return;
+      lastNudgeText = text; lastNudgeAt = Date.now();   // dedupe vs. the event-bus copy
       const b = addMessage('kael', 'KAEL', text);
       finalizeBubble(b);
       stopSpeaking();
@@ -2651,6 +2736,177 @@
       loadTasksPanel();
     });
 
+    // ---- reminders & routines (mirrors the task panel) ----
+    const schedList = document.getElementById('schedList');
+    const schedCount = document.getElementById('schedCount');
+    const schedText = document.getElementById('schedText');
+    const schedWhen = document.getElementById('schedWhen');
+    const schedAdd = document.getElementById('schedAdd');
+    function fmtWhen(iso) {
+      if (!iso) return '—';
+      try { return new Date(iso).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); }
+      catch { return iso; }
+    }
+    function renderSchedules(list) {
+      schedCount.textContent = list.length ? `(${list.length})` : '';
+      if (!list.length) { schedList.innerHTML = '<div class="memory-empty">No reminders yet — say “remind me at 5pm to…” or add one below.</div>'; return; }
+      schedList.innerHTML = '';
+      for (const s of list) {
+        const row = document.createElement('div');
+        row.className = 'task-row';
+        const recurTag = s.recur ? ` <span class="muted-count">(${s.recur.kind === 'interval' ? 'every ' + Math.round((s.recur.everyMs || 0) / 60000) + ' min' : s.recur.kind + ' ' + (s.recur.time || '')})</span>` : '';
+        const when = s.enabled && s.nextAt ? fmtWhen(s.nextAt) : (s.lastFiredAt ? 'fired ' + fmtWhen(s.lastFiredAt) : 'off');
+        row.innerHTML = `<span style="flex:1;">${s.text.replace(/</g, '&lt;')}${recurTag}<br><span class="muted-count">${when}</span></span>`;
+        const del = document.createElement('button');
+        del.className = 'mini-btn danger'; del.textContent = '✕'; del.title = 'Delete';
+        del.addEventListener('click', async () => {
+          await fetch(`/api/schedules/${encodeURIComponent(s.id)}`, { method: 'DELETE' }).catch(() => {});
+          loadSchedulesPanel();
+        });
+        row.appendChild(del);
+        schedList.appendChild(row);
+      }
+    }
+    async function loadSchedulesPanel() {
+      try {
+        const d = await fetch('/api/schedules').then((r) => r.json());
+        renderSchedules(d.schedules || []);
+      } catch { /* old server without schedules — leave the section idle */ }
+    }
+    schedAdd.addEventListener('click', async () => {
+      const text = schedText.value.trim();
+      const when = schedWhen.value;
+      if (!text || !when) { flashBrainNote('need both a reminder text and a time'); return; }
+      const at = new Date(when);
+      if (!(at > new Date())) { flashBrainNote('that time is in the past'); return; }
+      schedText.value = '';
+      const r = await fetch('/api/schedules', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, at: at.toISOString() }),
+      }).then((x) => x.json()).catch(() => null);
+      if (r && r.error) flashBrainNote(r.error);
+      loadSchedulesPanel();
+    });
+    schedText.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); schedAdd.click(); } });
+
+    // ---- permissions (the capability switchboard) ----
+    const permGrid = document.getElementById('permGrid');
+    let perms = {};   // cached — Awareness.start()/grabWebcam consult this before touching hardware
+    const PERM_LABELS = {
+      remote_access: 'Other devices', web_search: 'Web search', paid_claude: 'Claude (paid)',
+      paid_tts: 'Premium voice (paid)', awareness: 'Awareness', webcam: 'Webcam',
+      screen: 'Screen watching', training: 'Training data', scheduler: 'Reminders', planner: 'Planner',
+    };
+    async function loadPermissionsPanel() {
+      try {
+        const d = await fetch('/api/permissions').then((r) => r.json());
+        perms = d.permissions || {};
+        permGrid.innerHTML = '';
+        for (const [key, label] of Object.entries(PERM_LABELS)) {
+          if (!(key in perms)) continue;
+          const wrap = document.createElement('label');
+          wrap.className = 'chk';
+          const box = document.createElement('input');
+          box.type = 'checkbox'; box.checked = perms[key] !== false;
+          box.addEventListener('change', async () => {
+            perms[key] = box.checked;
+            await fetch('/api/permissions', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ [key]: box.checked }),
+            }).catch(() => { box.checked = !box.checked; perms[key] = box.checked; });   // roll back on failure
+          });
+          wrap.appendChild(box);
+          wrap.appendChild(document.createTextNode(' ' + label));
+          permGrid.appendChild(wrap);
+        }
+      } catch { /* old server — leave the section idle */ }
+    }
+
+    // ---- devices / pairing ----
+    const pairInfo = document.getElementById('pairInfo');
+    const pairCopy = document.getElementById('pairCopy');
+    const deviceCount = document.getElementById('deviceCount');
+    let pairUrl = '';
+    async function loadDevicesPanel() {
+      try {
+        const h = await fetch('/api/health').then((r) => r.json()).catch(() => null);
+        if (h && typeof h.devices === 'number') deviceCount.textContent = `(${h.devices} connected)`;
+        const r = await fetch('/api/pair');
+        if (r.status === 403) { pairInfo.textContent = 'This device is paired ✓ (pairing links are only shown on the PC itself).'; return; }
+        const d = await r.json();
+        if (!d.exposed) {
+          pairInfo.textContent = d.hint || 'Bound to localhost only — set KAEL_HOST=0.0.0.0 to reach KAEL from other devices.';
+          pairCopy.style.display = 'none';
+        } else if (d.urls && d.urls.length) {
+          pairUrl = d.urls[0];
+          pairInfo.textContent = `Open on your phone: ${pairUrl.replace(/token=.*/, 'token=…')}`;
+          pairCopy.style.display = '';
+        }
+      } catch { /* old server — leave idle */ }
+    }
+    pairCopy.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(pairUrl); pairCopy.textContent = 'Copied ✓'; }
+      catch { pairCopy.textContent = pairUrl ? 'Copy failed — ' + pairUrl : 'Copy failed'; }
+      setTimeout(() => { pairCopy.textContent = 'Copy pairing link'; }, 2500);
+    });
+
+    // ---- planner (say "plan: …" or "make a plan to …") ----
+    // Streams the plan + each step into one KAEL bubble, then speaks the answer.
+    async function runPlan(goal) {
+      // a plan is a turn too — barge-in cancels any in-flight turn and installs
+      // our own controller, exactly like handleUtterance, so a later message
+      // aborts the plan and nothing stomps state
+      stopSpeaking();
+      if (abortController) { try { abortController.abort(); } catch {} }
+      const ctrl = new AbortController();
+      abortController = ctrl;
+      addMessage('user', 'You', 'plan: ' + goal);
+      document.body.classList.add('has-convo');
+      const bubble = addMessage('kael', 'KAEL', '');
+      bubble._raw = '';
+      const show = (t) => { bubble.textContent = t; log.scrollTop = log.scrollHeight; };
+      setState('thinking');
+      try {
+        const resp = await fetch('/api/plan', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ goal }), signal: ctrl.signal,
+        });
+        if (!resp.ok) {
+          let msg = 'Planner failed (' + resp.status + ').';
+          try { msg = (await resp.json()).error || msg; } catch {}
+          throw new Error(msg);
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '', lines = [], answer = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop();
+          for (const part of parts) {
+            const line = part.trim();
+            if (!line.startsWith('data:')) continue;
+            let p; try { p = JSON.parse(line.slice(5).trim()); } catch { continue; }
+            if (p.type === 'plan') { lines = p.steps.map((s) => `○ ${s.tool}: ${s.input}`); show('Plan:\n' + lines.join('\n')); }
+            else if (p.type === 'step' && p.status === 'done') { lines[p.index] = `● ${p.tool}: ${p.outcome || 'done'}`; show('Plan:\n' + lines.join('\n')); }
+            else if (p.type === 'delta') { answer += p.text; show((lines.length ? 'Plan:\n' + lines.join('\n') + '\n\n' : '') + answer); }
+            else if (p.type === 'error') { throw new Error(p.text); }
+          }
+        }
+        bubble._raw = bubble.textContent;
+        finalizeBubble(bubble);
+        loadTasksPanel(); loadSchedulesPanel();   // steps may have added tasks/reminders
+        if (answer) { streamDone = true; muteMicForSpeech(); speakSentence(answer); }
+        else backToReady();
+      } catch (err) {
+        show('⚠ ' + err.message);
+        finalizeBubble(bubble);
+        backToReady();
+      }
+    }
+
     // ---- backend switch (free local model ⇄ Claude) ----
     let currentProvider = 'ollama';
     let providerModels = { ollama: '', claude: '' };   // filled from /api/provider
@@ -2751,6 +3007,61 @@
       if (!h || h.provider !== 'ollama' || !h.ollama) return;
       if (!h.ollama.up) interimEl.textContent = '⚠ Ollama isn\'t running — start the Ollama app so KAEL can think.';
       else if (!h.ollama.modelInstalled) interimEl.textContent = '⚠ Model "' + h.ollama.model + '" isn\'t pulled — run: ollama pull ' + h.ollama.model;
+    })();
+
+    // ---- live event stream (SSE) — cross-device sync + proactive pushes ----
+    // One long-lived connection to /api/events. Reminders fire out loud HERE
+    // (whichever devices are open), panels refresh when another device changes
+    // something, and coach nudges reach every screen — deduped so the device
+    // that triggered the nudge doesn't speak it twice.
+    let lastNudgeText = '', lastNudgeAt = 0;
+    (function connectEvents() {
+      let es = null;
+      const open = () => {
+        try {
+          es = new EventSource('/api/events' + (deviceToken ? '?token=' + encodeURIComponent(deviceToken) : ''));
+        } catch { return; }
+        es.onmessage = (ev) => {
+          let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+          switch (msg.type) {
+            case 'schedule.fired': {
+              // ALWAYS show the reminder — even mid-reply — so it's never lost;
+              // speak it only when we're idle (speakCoachNudge alone would bail
+              // silently while thinking/speaking, dropping it entirely)
+              const rb = addMessage('kael', 'KAEL', 'Reminder: ' + msg.text);
+              finalizeBubble(rb);
+              document.body.classList.add('has-convo');
+              if (state !== 'thinking' && state !== 'speaking' && !pttActive) {
+                stopSpeaking(); muteMicForSpeech(); streamDone = true;
+                speakSentence('Reminder: ' + msg.text);
+                if (voiceMuted) backToReady();
+              }
+              loadSchedulesPanel();
+              break;
+            }
+            case 'schedule.skipped':
+              flashBrainNote('missed while off: "' + msg.text + '"');
+              loadSchedulesPanel();
+              break;
+            case 'coach.nudge':
+              // the observing device already spoke this via the glance response
+              if (msg.text === lastNudgeText && Date.now() - lastNudgeAt < 20000) break;
+              speakCoachNudge(msg.text);
+              break;
+            case 'task.changed': if (document.visibilityState === 'visible') loadTasksPanel(); break;
+            case 'schedule.changed': if (document.visibilityState === 'visible') loadSchedulesPanel(); break;
+            case 'permissions.changed': perms = msg.permissions || perms; if (document.visibilityState === 'visible') loadPermissionsPanel(); break;
+            case 'provider.changed': setProviderLabel(msg.provider); break;
+          }
+        };
+        // browsers auto-reconnect SSE, but not after a network flip on mobile —
+        // recycle the connection ourselves with a small delay
+        es.onerror = () => { try { es.close(); } catch {} setTimeout(open, 8000); };
+      };
+      open();
+      // permission gates (webcam/screen) need the switchboard before Settings is
+      // ever opened — fetch it once at boot; default (empty) = everything allowed
+      fetch('/api/permissions').then((r) => r.json()).then((d) => { perms = d.permissions || perms; }).catch(() => {});
     })();
 
     // ---- text fallback ----

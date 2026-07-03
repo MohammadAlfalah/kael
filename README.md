@@ -15,8 +15,15 @@ The whole front end is one `public/index.html` — plain HTML/CSS/vanilla JS, no
 - **Ambient awareness (off by default).** It can glance at a screen I share plus a quick webcam frame every few minutes, run them through a **local** vision model (`qwen2.5vl:3b`), and keep a one-line note of what I'm doing — so it has real context. Frames go only to the local model and are never saved (unless you explicitly opt in to training-data collection, which stores screenshots locally under `data/training/`), and it flat-out refuses to send frames anywhere remote — both non-local Ollama URLs and Ollama's `*-cloud` models are blocked. I removed the sensitive-screen auto-skip on purpose: it describes whatever is on my screen, my choice.
 - **Proactive coaching.** Tell it what I'm focusing on and it watches my activity against that, speaking up *sparingly* when I drift or grind too long. A cooldown keeps it from nagging.
 - **Conversational task manager.** Mention a task in chat ("finish X by Friday, email my prof tonight") and it captures both with deadlines, prioritizes them, breaks them into steps, and answers "what should I work on?" from the list.
+- **Reminders & routines.** "Remind me at 5pm to email my prof" just works — chat extraction turns it into a schedule that fires *out loud* on every connected device. One-offs and daily/weekly routines, managed in Settings or by voice. Reminders missed while KAEL was off are skipped with a note, not blurted hours late.
+- **A planner.** Say "plan: …" and KAEL decomposes the goal into tool steps (web search / remember / add task / set reminder), runs them one by one with live progress, and speaks a synthesized answer. Bounded on purpose: ≤5 steps, one plan at a time, every run logged.
+- **Use it from your phone.** Set `KAEL_HOST=0.0.0.0`, open the pairing link from Settings → Devices on your phone (same Wi-Fi), and Add to Home Screen — the PWA installs full-screen and stays paired via a device token. Everything syncs live over one event stream (SSE): tasks, reminders, nudges, provider flips.
+- **Permissions switchboard.** One place in Settings to switch capabilities off — web search, the paid backends, webcam, screen, training collection, remote access — enforced server-side, so "off" means off everywhere.
+- **Runs 24/7.** A watchdog (`scripts/watchdog.mjs`) supervises the server: restart on crash with backoff, restart when hung (health checks), logs under `data/logs/`, daily backups of every store under `data/backups/`, and unclean-shutdown detection so a crash is visible, not silent.
 - **A 3D orb.** The status indicator is a WebGL energy core (Three.js) that reacts to listening / thinking / speaking, with a 2D fallback when WebGL isn't available.
 - **Installable as a PWA** — manifest + service worker, so it runs in its own window with the orb icon.
+
+Full design docs live in [`docs/`](docs/) — architecture (with diagrams), the complete API + event protocol, every data-store schema, and the roadmap (native Android, AR glasses).
 
 ## Tech
 
@@ -64,7 +71,8 @@ Everything is optional:
 | `AWARENESS_MODEL` | Local vision model for ambient awareness (default `qwen2.5vl:3b`). |
 | `KAEL_TIMEZONE` | IANA zone it's time-aware of (default `Europe/Berlin`). |
 | `PORT` | Default `3000`. |
-| `KAEL_HOST` | Bind address (default `127.0.0.1` — localhost only, since there's no auth). Set `0.0.0.0` to reach it from other devices, accepting that trade. |
+| `KAEL_HOST` | Bind address (default `127.0.0.1` — localhost only). Set `0.0.0.0` to reach KAEL from your phone/tablet; non-local devices must then pair with the device token. |
+| `KAEL_TOKEN` | Device token for non-local access. Auto-generated + persisted on first boot if unset — you normally never touch this. |
 
 The top-right pill (⚡ local / ✦ claude) flips backends live — no restart.
 
@@ -74,7 +82,7 @@ There's a full vision fine-tuning pipeline in [`scripts/finetune/`](scripts/fine
 
 ## Honest limitations
 
-- Single-user, no auth — it binds to `127.0.0.1` by default for exactly that reason. If you open it up with `KAEL_HOST=0.0.0.0`, everyone on your network can read its memory and use your keys.
+- Single-user by design. It binds to `127.0.0.1` by default; opening it up with `KAEL_HOST=0.0.0.0` puts every `/api/*` route behind a device token (pairing link in Settings → Devices) — but it's still one user's brain, not a multi-tenant system, and the pairing link itself is a secret: anyone you give it to *is* you.
 - Live mic input needs a Chromium browser (Web Speech API). Other browsers get spoken replies + the text box only.
 - The local 3B model is great for chat but the coaching *judgment* really wants a stronger model to tell drift from focus; you can point that at a cloud model in Settings (which then sees activity *summaries*, never screenshots) or keep it fully local.
 

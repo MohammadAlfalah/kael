@@ -13,10 +13,12 @@
 
 import express from 'express';
 import path from 'node:path';
+import os from 'node:os';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import 'dotenv/config';
 import Anthropic from '@anthropic-ai/sdk';
-import { readFile, writeFile, rename, appendFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, rename, appendFile, mkdir, copyFile, readdir, rm, unlink } from 'node:fs/promises';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -173,6 +175,12 @@ const TRAINING_IMAGES = path.join(TRAINING_DIR, 'images');
 const TRAINING_LABELS = path.join(TRAINING_DIR, 'labels.jsonl');
 const TRANSCRIPT_FILE = path.join(DATA_DIR, 'transcript.jsonl');
 const LISTEN_FILE = path.join(DATA_DIR, 'listening.jsonl');  // "listening mode" capture log
+const SCHEDULES_FILE = path.join(DATA_DIR, 'schedules.json');     // reminders + routines
+const PERMISSIONS_FILE = path.join(DATA_DIR, 'permissions.json'); // capability switchboard
+const PLANS_FILE = path.join(DATA_DIR, 'plans.jsonl');            // planner run log
+const AUTH_TOKEN_FILE = path.join(DATA_DIR, 'auth.token');        // device token (auto-generated once)
+const SERVER_LOCK = path.join(DATA_DIR, 'server.lock');           // heartbeat for unclean-shutdown detection
+const BACKUPS_DIR = path.join(DATA_DIR, 'backups');               // daily copies of the small JSON stores
 // KAEL always knows the current German time (Varyn's timezone). Injected into the
 // system prompt every turn so it's aware without being asked.
 const TIME_ZONE = process.env.KAEL_TIMEZONE || 'Europe/Berlin';
@@ -359,6 +367,9 @@ function saveTasks() {
       await rename(tmp, TASKS_FILE);
     })
     .catch((err) => console.error('Failed to save tasks:', err.message));
+  // every mutation funnels through here, so this one line keeps every open
+  // device's task panel in sync
+  broadcast('task.changed', { open: tasks.filter((t) => !t.done).length });
   return savingTasks;
 }
 
@@ -546,6 +557,470 @@ const app = express();
 // (a downscaled JPEG is ~50-200kb; the default 100kb limit would reject them).
 app.use(express.json({ limit: '12mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ==============================================================================
+//  ALWAYS-ON CORE — auth + pairing, event bus, permissions, scheduler, planner
+// ==============================================================================
+// Five small subsystems that turn KAEL from a localhost page into a hub other
+// devices can safely reach (phone/tablet install the PWA), that pushes what
+// happens on one device to all the others, and that can act on its own clock.
+// Zero new dependencies; same storage pattern as everything else in this file.
+
+// ---- Auth: device token for non-local requests --------------------------------
+// Localhost stays exactly as before — no token, zero config. Any OTHER address
+// must present the device token: `X-KAEL-Token` header, `?token=` in the URL
+// (what the pairing link uses — it also sets a cookie so the next loads and the
+// event stream just work), or that cookie. The token comes from KAEL_TOKEN in
+// .env, or is auto-generated once and persisted so it survives restarts. This is
+// what makes KAEL_HOST=0.0.0.0 a sane thing to do.
+let authToken = (process.env.KAEL_TOKEN || '').trim();
+async function loadAuthToken() {
+  if (authToken) return;   // .env wins
+  try { authToken = (await readFile(AUTH_TOKEN_FILE, 'utf8')).trim(); } catch { /* first boot */ }
+  if (!authToken) {
+    authToken = crypto.randomBytes(24).toString('base64url');
+    await writeFile(AUTH_TOKEN_FILE, authToken, 'utf8').catch((err) =>
+      console.error('Failed to persist device token:', err.message));
+  }
+}
+function isLocalReq(req) {
+  const ip = req.socket?.remoteAddress || '';
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+function cookieToken(req) {
+  const m = /(?:^|;\s*)kael_token=([^;]+)/.exec(req.headers.cookie || '');
+  return m ? decodeURIComponent(m[1]) : '';
+}
+function tokenOk(presented) {
+  if (!authToken || !presented) return false;
+  const a = Buffer.from(String(presented)), b = Buffer.from(authToken);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);   // constant-time compare
+}
+// DNS-rebinding guard: the browser sends the site's ORIGINAL hostname in Host,
+// so an evil.com page rebinding to 127.0.0.1 fails this even though the socket
+// looks local. Allowed = loopback + this machine's own LAN IPs (+ a set host).
+function allowedHostnames() {
+  const set = new Set(['localhost', '127.0.0.1', '::1']);
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const ni of list || []) if (ni.family === 'IPv4') set.add(ni.address);
+  }
+  if (HOST && HOST !== '0.0.0.0' && HOST !== '127.0.0.1') set.add(HOST);
+  return set;
+}
+const ALLOWED_HOSTS = allowedHostnames();
+function hostOk(req) {
+  const host = (req.headers.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase();
+  return !host || ALLOWED_HOSTS.has(host);   // no Host at all = non-browser tool, can't rebind
+}
+app.use('/api', (req, res, next) => {
+  if (!hostOk(req)) return res.status(403).json({ error: 'Bad Host header (possible DNS-rebinding).' });
+  if (isLocalReq(req)) return next();                    // the desktop stays frictionless
+  if (permissions.remote_access === false) {
+    return res.status(403).json({ error: 'Remote access is switched off in KAEL\'s permissions.' });
+  }
+  const presented = req.get('x-kael-token') || req.query.token || cookieToken(req);
+  if (tokenOk(presented)) {
+    // refresh the cookie so the PWA + event stream keep working without ?token=
+    res.setHeader('Set-Cookie',
+      `kael_token=${encodeURIComponent(authToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`);
+    return next();
+  }
+  return res.status(401).json({ error: 'This device isn\'t paired with KAEL yet. Open Settings → Devices on the PC for the pairing link.' });
+});
+
+// Pairing info — LOCALHOST ONLY, because it hands out the token. The client's
+// Settings panel shows these links; opening one on the phone pairs it (the
+// ?token= sets the cookie and is then stripped from the URL bar by the client).
+app.get('/api/pair', (req, res) => {
+  if (!isLocalReq(req)) return res.status(403).json({ error: 'Pairing info is only available on the PC itself.' });
+  const ips = [];
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const ni of list || []) if (ni.family === 'IPv4' && !ni.internal) ips.push(ni.address);
+  }
+  res.json({
+    exposed: HOST !== '127.0.0.1',
+    host: HOST,
+    port: Number(PORT),
+    token: authToken,
+    urls: ips.map((ip) => `http://${ip}:${PORT}/?token=${encodeURIComponent(authToken)}`),
+    hint: HOST === '127.0.0.1'
+      ? 'KAEL is bound to localhost only. Set KAEL_HOST=0.0.0.0 in .env and restart to reach it from other devices.'
+      : 'Open one of these links on a device on the same network, then "Install app" / "Add to Home Screen" for the full-screen PWA.',
+  });
+});
+
+// ---- Event bus (SSE) — how KAEL talks to every open window --------------------
+// One long-lived stream per connected device. Everything proactive rides on it:
+// task/schedule changes made anywhere show up everywhere, reminders fire out
+// loud on whichever device is listening, coach nudges reach the phone too.
+// Data-only SSE, exactly like /api/chat speaks. Protocol: each message is
+// `{ type, at, ...payload }` — see docs/API.md for the full event catalogue.
+const sseClients = new Set();
+function broadcast(type, data = {}) {
+  if (!sseClients.size) return;
+  const line = `data: ${JSON.stringify({ type, at: new Date().toISOString(), ...data })}\n\n`;
+  for (const client of sseClients) { try { client.write(line); } catch { /* dead pipe — close event cleans up */ } }
+}
+app.get('/api/events', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+  });
+  res.write(`data: ${JSON.stringify({ type: 'hello', at: new Date().toISOString(), devices: sseClients.size + 1 })}\n\n`);
+  sseClients.add(res);
+  req.on('close', () => sseClients.delete(res));
+});
+// heartbeat keeps proxies/browsers from timing the stream out, and doubles as a
+// liveness signal the client can watch
+setInterval(() => broadcast('health.heartbeat', { uptimeSec: Math.round(process.uptime()) }), 25000).unref();
+
+// ---- Permissions — one switchboard for what KAEL may do -----------------------
+// Every capability defaults to ON (exactly the behavior before this existed);
+// the switchboard is for turning things OFF and having that stick. Server-side
+// enforcement where the capability lives here (search, paid APIs, awareness,
+// scheduler, planner, remote access); webcam/screen are enforced in the client,
+// where the browser capture actually happens.
+const PERMISSION_KEYS = ['remote_access', 'web_search', 'paid_claude', 'paid_tts',
+  'awareness', 'webcam', 'screen', 'training', 'scheduler', 'planner'];
+let permissions = Object.fromEntries(PERMISSION_KEYS.map((k) => [k, true]));
+async function loadPermissions() {
+  try {
+    const parsed = JSON.parse(await readFile(PERMISSIONS_FILE, 'utf8'));
+    for (const k of PERMISSION_KEYS) if (typeof parsed?.[k] === 'boolean') permissions[k] = parsed[k];
+  } catch { /* first boot or corrupt — defaults (all allowed) apply */ }
+}
+let savingPermissions = Promise.resolve();
+function savePermissions() {
+  const snapshot = JSON.stringify({ version: 1, ...permissions }, null, 2);
+  savingPermissions = savingPermissions.then(async () => {
+    try {
+      await writeFile(`${PERMISSIONS_FILE}.tmp`, snapshot, 'utf8');
+      await rename(`${PERMISSIONS_FILE}.tmp`, PERMISSIONS_FILE);
+    } catch (err) { console.error('Failed to save permissions:', err.message); }
+  });
+  return savingPermissions;
+}
+app.get('/api/permissions', (_req, res) => res.json({ permissions }));
+app.post('/api/permissions', (req, res) => {
+  const body = req.body || {};
+  let changed = 0;
+  for (const k of PERMISSION_KEYS) if (typeof body[k] === 'boolean' && body[k] !== permissions[k]) { permissions[k] = body[k]; changed++; }
+  if (changed) { savePermissions(); broadcast('permissions.changed', { permissions }); }
+  res.json({ permissions });
+});
+
+// ---- Scheduler — reminders + routines that fire on KAEL's own clock -----------
+// One-offs ("remind me at 17:00 to email my prof") and recurring routines
+// (daily/weekly/interval). Due jobs broadcast `schedule.fired` on the event bus —
+// every connected device speaks them — and land in the transcript. Jobs missed
+// by more than the grace window (KAEL was off) are skipped with a note instead
+// of being blurted hours late. Created via REST, the Settings panel, or just by
+// SAYING it — chat extraction (below) feeds addSchedule too.
+let schedules = { version: 1, schedules: [] };
+let schedSeq = 0;
+async function loadSchedules() {
+  try {
+    const parsed = JSON.parse(await readFile(SCHEDULES_FILE, 'utf8'));
+    if (Array.isArray(parsed?.schedules)) {
+      schedules.schedules = parsed.schedules.filter((s) => s && typeof s.text === 'string' && typeof s.id === 'string');
+      for (const s of schedules.schedules) {
+        const n = Number(/-(\d+)$/.exec(s.id)?.[1]);
+        if (Number.isFinite(n) && n > schedSeq) schedSeq = n;
+      }
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      console.error('Schedules file unreadable — quarantining it:', err.message);
+      await rename(SCHEDULES_FILE, `${SCHEDULES_FILE}.corrupt`).catch(() => {});
+    }
+  }
+}
+let savingSchedules = Promise.resolve();
+function saveSchedules() {
+  const snapshot = JSON.stringify(schedules, null, 2);
+  savingSchedules = savingSchedules.then(async () => {
+    try {
+      await writeFile(`${SCHEDULES_FILE}.tmp`, snapshot, 'utf8');
+      await rename(`${SCHEDULES_FILE}.tmp`, SCHEDULES_FILE);
+    } catch (err) { console.error('Failed to save schedules:', err.message); }
+  });
+  broadcast('schedule.changed', { count: schedules.schedules.length });
+  return savingSchedules;
+}
+// Next fire time for a recurrence, computed in the SERVER's local timezone
+// (this machine = the user's machine, so "09:00" means their 09:00).
+function computeNextAt(recur, from = Date.now()) {
+  if (!recur || typeof recur !== 'object') return null;
+  if (recur.kind === 'interval') {
+    const every = Math.max(60000, Number(recur.everyMs) || 0);   // floor: 1 minute
+    return new Date(from + every).toISOString();
+  }
+  const [h, m] = String(recur.time || '09:00').split(':').map((x) => Number(x));
+  const d = new Date(from);
+  d.setHours(Number.isFinite(h) ? h : 9, Number.isFinite(m) ? m : 0, 0, 0);
+  if (recur.kind === 'daily') {
+    if (d.getTime() <= from) d.setDate(d.getDate() + 1);
+    return d.toISOString();
+  }
+  if (recur.kind === 'weekly') {
+    const wd = Math.min(6, Math.max(0, Number(recur.weekday) || 0));   // 0 = Sunday
+    let guard = 0;
+    while ((d.getDay() !== wd || d.getTime() <= from) && guard++ < 8) d.setDate(d.getDate() + 1);
+    return d.toISOString();
+  }
+  return null;
+}
+function addSchedule({ text, at = null, recur = null }) {
+  const clean = String(text || '').trim().slice(0, 200);
+  if (!clean) return null;
+  let nextAt = null;
+  if (recur) nextAt = computeNextAt(recur);
+  else if (at && Number.isFinite(Date.parse(at))) nextAt = new Date(Date.parse(at)).toISOString();
+  if (!nextAt) return null;
+  const s = {
+    id: `s${Date.now()}-${++schedSeq}`, text: clean, recur: recur || null,
+    nextAt, lastFiredAt: null, enabled: true, createdAt: new Date().toISOString(),
+  };
+  schedules.schedules.push(s);
+  return s;
+}
+const SCHEDULE_MISSED_GRACE = 6 * 3600 * 1000;   // older than this = skip, don't blurt
+function scheduleTick() {
+  if (permissions.scheduler === false) return;
+  const now = Date.now();
+  let changed = false;
+  for (const s of schedules.schedules) {
+    if (!s.enabled || !s.nextAt) continue;
+    const due = Date.parse(s.nextAt);
+    if (!Number.isFinite(due) || due > now) continue;
+    if (now - due > SCHEDULE_MISSED_GRACE) {
+      broadcast('schedule.skipped', { id: s.id, text: s.text, missedAt: s.nextAt });
+      appendTranscript('assistant', `(missed reminder while offline: "${s.text}" — was due ${s.nextAt})`);
+    } else {
+      // the ONLY delivery path is the SSE broadcast — if no device is connected
+      // yet (e.g. the boot tick, before the app window opens), DON'T consume the
+      // job; leave it pending so it fires on a later tick once a device is back.
+      // The grace window above still bounds how late it can end up speaking.
+      if (sseClients.size === 0) continue;
+      broadcast('schedule.fired', { id: s.id, text: s.text });
+      appendTranscript('assistant', `⏰ Reminder: ${s.text}`);
+      s.lastFiredAt = new Date(now).toISOString();
+    }
+    changed = true;
+    if (s.recur) s.nextAt = computeNextAt(s.recur, now);
+    else { s.enabled = false; s.nextAt = null; }   // one-off: done
+  }
+  if (changed) saveSchedules();
+}
+app.get('/api/schedules', (_req, res) => {
+  const list = [...schedules.schedules].sort((a, b) =>
+    (a.nextAt ? Date.parse(a.nextAt) : Infinity) - (b.nextAt ? Date.parse(b.nextAt) : Infinity));
+  res.json({ schedules: list });
+});
+app.post('/api/schedules', (req, res) => {
+  const { text, at, recur } = req.body || {};
+  if (recur && !['daily', 'weekly', 'interval'].includes(recur.kind)) {
+    return res.status(400).json({ error: 'recur.kind must be "daily", "weekly", or "interval".' });
+  }
+  const s = addSchedule({ text, at, recur });
+  if (!s) return res.status(400).json({ error: 'Need text plus a valid future "at" (ISO 8601) or a "recur" rule.' });
+  saveSchedules();
+  res.json({ schedule: s });
+});
+app.post('/api/schedules/:id', (req, res) => {
+  const s = schedules.schedules.find((x) => x.id === req.params.id);
+  if (!s) return res.status(404).json({ error: 'No such schedule.' });
+  const body = req.body || {};
+  if (typeof body.enabled === 'boolean') {
+    s.enabled = body.enabled;
+    // re-arming a one-off that already fired needs a new time; re-arming a
+    // recurrence just recomputes its next slot
+    if (s.enabled && !s.nextAt && s.recur) s.nextAt = computeNextAt(s.recur);
+  }
+  if (typeof body.text === 'string' && body.text.trim()) s.text = body.text.trim().slice(0, 200);
+  if (body.at && Number.isFinite(Date.parse(body.at))) { s.recur = null; s.nextAt = new Date(Date.parse(body.at)).toISOString(); s.enabled = true; }
+  saveSchedules();
+  res.json({ schedule: s });
+});
+app.delete('/api/schedules/:id', (req, res) => {
+  const before = schedules.schedules.length;
+  schedules.schedules = schedules.schedules.filter((x) => x.id !== req.params.id);
+  if (schedules.schedules.length === before) return res.status(404).json({ error: 'No such schedule.' });
+  saveSchedules();
+  res.json({ ok: true });
+});
+
+// ---- Planner — a goal in, a few tool steps out, executed one by one -----------
+// KAEL's small orchestration engine: decompose a goal into steps over a fixed
+// tool set (search / remember / task / remind / answer), run them sequentially
+// with progress streamed to the caller AND broadcast to every device, then
+// synthesize the answer with everything gathered. Bounded on purpose: ≤5 steps,
+// one plan at a time, every step best-effort. Runs are logged to plans.jsonl.
+let activePlan = null;
+async function runPlanStep(step, gathered) {
+  const input = String(step.input || '').trim();
+  switch (step.tool) {
+    case 'search': {
+      if (permissions.web_search === false) return 'web search is switched off in permissions';
+      const results = await webSearch(input, AbortSignal.timeout(20000));
+      const text = results?.length ? formatResults(input, results) : 'no results';
+      gathered.push(`Search "${input}":\n${text}`);
+      return `${results?.length || 0} results`;
+    }
+    case 'remember': {
+      if (!input) return 'nothing to remember';
+      memory.profile.push(input.slice(0, 200));
+      if (memory.profile.length > MAX_PROFILE_FACTS) memory.profile = memory.profile.slice(-MAX_PROFILE_FACTS);
+      saveMemory();
+      gathered.push(`Saved to memory: ${input}`);
+      return 'saved';
+    }
+    case 'task': {
+      const t = addTask({ text: input });
+      if (t) saveTasks();
+      gathered.push(t ? `Added task: ${t.text}` : `Task already on the list: ${input}`);
+      return t ? 'task added' : 'duplicate';
+    }
+    case 'remind': {
+      const when = Date.parse(step.when);
+      // the model computes the time — reject a past or absurdly-far one (misread)
+      if (!Number.isFinite(when) || when < Date.now() - 60000 || when > Date.now() + 366 * 24 * 3600 * 1000) {
+        gathered.push(`Couldn't schedule "${input}" — the time came out invalid.`);
+        return 'invalid time';
+      }
+      const s = addSchedule({ text: input, at: new Date(when).toISOString() });
+      if (s) saveSchedules();
+      gathered.push(s ? `Reminder set for ${s.nextAt}: ${s.text}` : `Couldn't schedule "${input}" — bad/missing time`);
+      return s ? `set for ${s.nextAt}` : 'invalid time';
+    }
+    default:
+      return 'unknown tool';
+  }
+}
+app.post('/api/plan', async (req, res) => {
+  const goal = String(req.body?.goal || '').trim().slice(0, 400);
+  if (!goal) return res.status(400).json({ error: 'Give the planner a goal.' });
+  if (permissions.planner === false) return res.status(403).json({ error: 'The planner is switched off in KAEL\'s permissions.' });
+  if (activePlan) return res.status(409).json({ error: 'A plan is already running — let it finish first.' });
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+  });
+  res.flushHeaders?.();
+  const send = (payload) => { try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch {} };
+
+  const planId = `p${Date.now()}`;
+  activePlan = planId;
+  const runLog = { id: planId, goal, at: new Date().toISOString(), steps: [] };
+  try {
+    send({ type: 'status', text: 'planning…' });
+    const prompt = `You are KAEL's planner. Convert the user's goal into tool steps.
+Tools:
+- "search": look something up on the web. input = the search query.
+- "remember": save one durable fact about the user. input = the fact, one sentence.
+- "task": add an item to the user's to-do list. input = short imperative task text. USE THIS whenever they want something added, tracked, or done later.
+- "remind": schedule a spoken reminder. input = what to say; "when" = exact ISO 8601 date-time computed from the current time.
+- "answer": compose the final spoken answer from everything gathered. input = one line of guidance. EXACTLY ONE, always LAST.
+
+Example — goal "add buy flour to my list and remind me at 6pm to preheat the oven, and what's a good oven temp for croissants?" becomes:
+{"steps":[{"tool":"task","input":"Buy flour"},{"tool":"remind","input":"Preheat the oven","when":"2026-01-01T18:00:00+01:00"},{"tool":"search","input":"best oven temperature for baking croissants"},{"tool":"answer","input":"confirm the task and reminder, give the temperature"}]}
+
+Current date/time: ${germanNow() || new Date().toString()}.
+The user's goal: "${goal}"
+1-5 steps, only what the goal needs. Reply with STRICT JSON only (no prose, no code fence):
+{"steps":[{"tool":"...","input":"...","when":"<ISO 8601, remind only>"}]}`;
+    const raw = await localChat([{ role: 'user', content: prompt }],
+      { think: false, num_predict: 700, temperature: 0.2, timeout: 45000 });
+    const parsed = parseJsonLoose(raw);
+    let steps = Array.isArray(parsed?.steps) ? parsed.steps.slice(0, 5) : [];
+    steps = steps.filter((s) => s && ['search', 'remember', 'task', 'remind', 'answer'].includes(s.tool));
+    if (!steps.some((s) => s.tool === 'answer')) steps.push({ tool: 'answer', input: 'answer the goal directly' });
+    send({ type: 'plan', steps: steps.map((s) => ({ tool: s.tool, input: String(s.input || '').slice(0, 160) })) });
+    broadcast('plan.started', { planId, goal, steps: steps.length });
+
+    const gathered = [];
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      if (step.tool === 'answer') continue;   // runs last, below
+      send({ type: 'step', index: i, tool: step.tool, input: String(step.input || '').slice(0, 160), status: 'running' });
+      broadcast('plan.step', { planId, index: i, tool: step.tool, status: 'running' });
+      let outcome = 'ok';
+      try { outcome = await runPlanStep(step, gathered); }
+      catch (err) { outcome = `failed: ${err.message}`; gathered.push(`Step "${step.tool}: ${step.input}" failed (${err.message}).`); }
+      runLog.steps.push({ tool: step.tool, input: String(step.input || '').slice(0, 200), outcome: String(outcome).slice(0, 200) });
+      send({ type: 'step', index: i, tool: step.tool, status: 'done', outcome: String(outcome).slice(0, 160) });
+      broadcast('plan.step', { planId, index: i, tool: step.tool, status: 'done' });
+    }
+
+    send({ type: 'status', text: 'writing the answer…' });
+    const answerGuide = steps.find((s) => s.tool === 'answer')?.input || 'answer the goal directly';
+    const answer = await localChat([
+      { role: 'system', content: buildSystemPrompt() },
+      { role: 'user', content: `Goal: ${goal}\n\nWhat the plan gathered:\n${gathered.join('\n\n') || '(nothing — answer from what you know)'}\n\nGuidance: ${answerGuide}\nGive the final answer for the user. Spoken-friendly, concrete, no preamble.` },
+    ], { think: false, num_predict: 500, temperature: 0.5, timeout: 60000 });
+    runLog.answer = answer.slice(0, 2000);
+    send({ type: 'delta', text: answer });
+    send({ type: 'done' });
+    broadcast('plan.done', { planId, goal });
+    appendTranscript('user', `(plan) ${goal}`);
+    appendTranscript('assistant', answer);
+  } catch (err) {
+    runLog.error = err.message;
+    send({ type: 'error', text: `Planning failed: ${err.message}` });
+    broadcast('plan.done', { planId, goal, error: err.message });
+  } finally {
+    activePlan = null;
+    appendFile(PLANS_FILE, JSON.stringify(runLog) + '\n', 'utf8').catch(() => {});
+    res.end();
+  }
+});
+app.get('/api/plans', async (_req, res) => {
+  const rows = await readJsonl(PLANS_FILE).catch(() => []);
+  res.json({ plans: rows.slice(-20).reverse() });
+});
+
+// ---- Data safety: daily backups + unclean-shutdown detection -------------------
+// The JSON stores are the whole of KAEL's mind — copy them daily into
+// data/backups/YYYY-MM-DD/ (kept 7 days) so a bad write or disk hiccup never
+// costs everything. The lock heartbeat lets a fresh boot tell a clean restart
+// from a crash/power-cut and say so.
+const BACKUP_KEEP_DAYS = 7;
+async function backupDataStores() {
+  try {
+    const day = new Date().toISOString().slice(0, 10);
+    const dir = path.join(BACKUPS_DIR, day);
+    await mkdir(dir, { recursive: true });
+    for (const file of [MEMORY_FILE, CONFIG_FILE, TASKS_FILE, AWARENESS_LEARNED_FILE, SCHEDULES_FILE, PERMISSIONS_FILE]) {
+      await copyFile(file, path.join(dir, path.basename(file))).catch(() => {});   // missing store = fine
+    }
+    const days = (await readdir(BACKUPS_DIR)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+    for (const old of days.slice(0, Math.max(0, days.length - BACKUP_KEEP_DAYS))) {
+      await rm(path.join(BACKUPS_DIR, old), { recursive: true, force: true }).catch(() => {});
+    }
+  } catch (err) { console.error('Backup pass failed:', err.message); }
+}
+let uncleanShutdown = false;
+async function initServerLock() {
+  try {
+    const lock = JSON.parse(await readFile(SERVER_LOCK, 'utf8'));
+    // Only a RECENT heartbeat means we really died mid-run (crash / force-kill);
+    // an old leftover lock is just stale cruft, not a crash to report.
+    if (Date.now() - (lock.heartbeat || 0) < 120000) uncleanShutdown = true;
+  } catch { /* no lock / corrupt = clean start */ }
+  if (uncleanShutdown) console.log('  recovered from an unclean shutdown (previous run left its lock behind).');
+  const beat = () => writeFile(SERVER_LOCK, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), heartbeat: Date.now() })).catch(() => {});
+  await beat();
+  setInterval(beat, 30000).unref();
+}
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, async () => {
+    await unlink(SERVER_LOCK).catch(() => {});   // clean exit — next boot knows it
+    process.exit(0);
+  });
+}
 
 // ---- Web search (Brave) -----------------------------------------------------
 
@@ -826,7 +1301,7 @@ app.post('/api/chat', async (req, res) => {
   // The raw search block is used for THIS call only — it is never persisted to
   // history (keeps injected snippets from lingering and keeps history small).
   let augmented = message;
-  if (wantsWebSearch(message)) {
+  if (permissions.web_search !== false && wantsWebSearch(message)) {
     const query = extractQuery(message);
     try {
       send({ type: 'status', text: `Searching the web for "${query}"…` });
@@ -862,8 +1337,11 @@ app.post('/api/chat', async (req, res) => {
     { role: 'user', content: augmented },
   ];
 
+  // paid_claude can be switched off AFTER the provider was already set to claude —
+  // enforce it at the spend site too, falling back to the free local model.
+  const useClaude = provider === 'claude' && permissions.paid_claude !== false;
   try {
-    const assistantText = provider === 'claude'
+    const assistantText = useClaude
       ? await streamFromClaude(messages, send, controller.signal, systemPrompt)
       : await streamFromOllama(messages, send, controller.signal, systemPrompt);
 
@@ -925,9 +1403,13 @@ app.post('/api/provider', (req, res) => {
   if (next === 'claude' && !process.env.ANTHROPIC_API_KEY) {
     return res.status(400).json({ error: 'Claude needs ANTHROPIC_API_KEY in your .env file.' });
   }
+  if (next === 'claude' && permissions.paid_claude === false) {
+    return res.status(403).json({ error: 'The paid Claude backend is switched off in KAEL\'s permissions.' });
+  }
   // Switching mid-reply is fine: the in-flight turn already picked its backend,
   // so only the NEXT turn uses the new one.
   provider = next;
+  broadcast('provider.changed', { provider });
   res.json({ provider });
 });
 
@@ -1258,10 +1740,12 @@ async function extractFromChat(message) {
   const extractModel = coaching.enabled ? coaching.model : OLLAMA_MODEL;
   try {
     const prompt = `The user said to their assistant: "${m}".
+Current date/time: ${germanNow() || new Date().toString()}.
 Extract, as STRICT JSON only (no prose, no code fence):
 {"focus": <short phrase of what they are focusing on RIGHT NOW if they said so, else null>,
- "tasks": [<for each concrete task / to-do / plan / commitment they mention: {"text": short imperative task, "deadline": the deadline if they gave one else null, "priority": "high" | "medium" | "low" judged by urgency, importance and any deadline}>]}
-Only real action items — IGNORE questions, opinions, small talk, things already done. If there is no focus use null; if there are no tasks use []. Reply with ONLY the JSON object.`;
+ "tasks": [<for each concrete task / to-do / plan / commitment they mention: {"text": short imperative task, "deadline": the deadline if they gave one else null, "priority": "high" | "medium" | "low" judged by urgency, importance and any deadline}>],
+ "reminders": [<ONLY if they explicitly asked to be REMINDED of something at a time ("remind me...", "wecke mich...", "tell me at..."): {"text": what to say when it fires, "when": that moment as exact ISO 8601 date-time with timezone offset, computed from the current date/time above}>]}
+Only real action items — IGNORE questions, opinions, small talk, things already done. If there is no focus use null; if there are no tasks use []; if no explicit reminder request use []. Reply with ONLY the JSON object.`;
     const out = await localChat([{ role: 'user', content: prompt }],
       { model: extractModel, think: false, num_predict: 800, temperature: 0.1, timeout: 30000 });
     const json = parseJsonLoose(out);
@@ -1281,6 +1765,19 @@ Only real action items — IGNORE questions, opinions, small talk, things alread
       }
     }
     if (added) { saveTasks(); console.log(`Captured ${added} task(s) from chat.`); }
+    // reminders ride on the same extraction call — "remind me at 5 to email my
+    // prof" becomes a schedule that fires out loud on every connected device
+    let reminders = 0;
+    if (Array.isArray(json.reminders)) {
+      for (const r of json.reminders.slice(0, 3)) {
+        const text = r && String(r.text || '').trim();
+        const when = r && Date.parse(r.when);
+        if (!text || !Number.isFinite(when)) continue;
+        if (when < Date.now() - 60000 || when > Date.now() + 366 * 24 * 3600 * 1000) continue;   // past or absurdly far = model misread the time
+        if (addSchedule({ text, at: new Date(when).toISOString() })) reminders++;
+      }
+    }
+    if (reminders) { saveSchedules(); console.log(`Captured ${reminders} reminder(s) from chat.`); }
   } catch { /* extraction is best-effort */ }
 }
 
@@ -1418,12 +1915,14 @@ app.post('/api/awareness/observe', async (req, res) => {
       if (recentNotes.length > RECENT_NOTES_MAX) recentNotes = recentNotes.slice(-RECENT_NOTES_MAX);
       if (++awarenessAppends % 500 === 0) rotateAwarenessLog();   // best-effort, detached
       // opt-in: save the (screenshot, caption) pair for the future fine-tune
-      if (awareness.collectTraining && screenB64) saveTrainingSample(screenB64, note);
+      if (awareness.collectTraining && permissions.training !== false && screenB64) saveTrainingSample(screenB64, note);
+      broadcast('awareness.note', { note, mood });   // other devices see what KAEL noticed
     }
     // proactive presence rides along on the glance — null unless KAEL has something
     // worth saying right now (and isn't in its cooldown)
     let coach = null;
     try { coach = await coachCheck(); } catch { /* proactive voice never breaks a glance */ }
+    if (coach) broadcast('coach.nudge', { text: coach });   // spoken on every device, not just this one
     res.json({ note, mood, at: awareness.latestAt, coach });
   } catch (err) {
     res.status(502).json({ error: `Vision model failed: ${err.message}` });
@@ -1617,13 +2116,30 @@ app.get('/api/health', async (_req, res) => {
     }
   } catch { /* Ollama not running — reported as up:false */ }
 
+  // Is the watchdog supervising us? Its lock heartbeats every 30s when it is.
+  let supervised = false;
+  try {
+    const lock = JSON.parse(await readFile(path.join(DATA_DIR, 'watchdog.lock'), 'utf8'));
+    supervised = Date.now() - (lock.heartbeat || 0) < 90000;
+  } catch { /* no watchdog — started by hand */ }
+
+  const nextSchedule = schedules.schedules
+    .filter((s) => s.enabled && s.nextAt)
+    .sort((a, b) => Date.parse(a.nextAt) - Date.parse(b.nextAt))[0] || null;
+
   res.json({
     status: 'ok',
+    uptimeSec: Math.round(process.uptime()),
+    supervised,                                  // true = the 24/7 watchdog has us
+    recoveredFromCrash: uncleanShutdown,         // last shutdown wasn't clean
     provider,
     ollama: { url: OLLAMA_URL, model: OLLAMA_MODEL, up: ollamaUp, modelInstalled },
     claude: { model: CLAUDE_MODEL, hasApiKey: Boolean(process.env.ANTHROPIC_API_KEY) },
     // enough to tell "awareness silently died" from "awareness is off"
     awareness: { enabled: awareness.enabled, model: awareness.model, modelInstalled: visionInstalled, lastGlanceAt: awareness.latestAt },
+    devices: sseClients.size,                    // live event-stream connections
+    scheduler: { count: schedules.schedules.length, nextAt: nextSchedule?.nextAt || null, nextText: nextSchedule?.text || null },
+    exposure: { host: HOST, authRequired: HOST !== '127.0.0.1' },
   });
 });
 
@@ -1645,6 +2161,9 @@ app.get('/api/voice', (_req, res) => {
 app.post('/api/tts', async (req, res) => {
   if (!OPENAI_API_KEY) {
     return res.status(503).json({ error: 'Premium voice is not configured (no OPENAI_API_KEY).' });
+  }
+  if (permissions.paid_tts === false) {
+    return res.status(403).json({ error: 'Premium voice is switched off in KAEL\'s permissions.' });
   }
   const text = (req.body?.text ?? '').toString().trim();
   if (!text) return res.status(400).json({ error: 'Text is required.' });
@@ -1723,6 +2242,14 @@ await loadLearned();      // restore what awareness has learned about the user
 await loadTasks();        // restore the task list
 await loadRecentNotes();  // tail of the awareness log, for the coach
 rotateAwarenessLog();     // trim the log if it outgrew the cap (detached)
+await loadAuthToken();    // device token, so phones/tablets can pair
+await loadPermissions();  // the capability switchboard
+await loadSchedules();    // reminders + routines
+await initServerLock();   // unclean-shutdown detection + heartbeat
+backupDataStores();       // daily safety copies of every small store (detached)
+setInterval(backupDataStores, 24 * 3600 * 1000).unref();
+setInterval(scheduleTick, 30000).unref();
+scheduleTick();           // fire (or skip-with-a-note) anything that came due while off
 
 app.listen(PORT, HOST, () => {
   console.log(`KAEL is live → http://localhost:${PORT}${HOST !== '127.0.0.1' ? `  (bound to ${HOST})` : ''}`);
@@ -1735,4 +2262,14 @@ app.listen(PORT, HOST, () => {
     ? `ON (OpenAI ${OPENAI_TTS_MODEL}, default voice "${OPENAI_TTS_VOICE}")`
     : 'off (free browser voice — set OPENAI_API_KEY to enable)'}.`);
   warmUpModel();   // fire-and-forget: load the model now so the first reply is fast
+}).on('error', (err) => {
+  // Port already taken = another KAEL is already running (e.g. an old autostart
+  // loop still up during a supervision migration). Exit calmly instead of a
+  // crash-loop — but DON'T delete the lock: the running instance owns it.
+  if (err.code === 'EADDRINUSE') {
+    console.error(`Port ${PORT} is already in use — another KAEL instance is running. Exiting.`);
+    process.exit(0);
+  }
+  console.error('Server failed to start:', err.message);
+  process.exit(1);
 });
