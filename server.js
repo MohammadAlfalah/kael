@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import 'dotenv/config';
 import Anthropic from '@anthropic-ai/sdk';
 import { readFile, writeFile, rename, appendFile, mkdir, copyFile, readdir, rm, unlink } from 'node:fs/promises';
+import { readFileSync, statSync } from 'node:fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -181,6 +182,7 @@ const PLANS_FILE = path.join(DATA_DIR, 'plans.jsonl');            // planner run
 const AUTH_TOKEN_FILE = path.join(DATA_DIR, 'auth.token');        // device token (auto-generated once)
 const SERVER_LOCK = path.join(DATA_DIR, 'server.lock');           // heartbeat for unclean-shutdown detection
 const BACKUPS_DIR = path.join(DATA_DIR, 'backups');               // daily copies of the small JSON stores
+const OS_CONTEXT_FILE = path.join(DATA_DIR, 'os-context.json');   // written by Kael Ascension OS (:3001) — read-only here
 // KAEL always knows the current German time (Varyn's timezone). Injected into the
 // system prompt every turn so it's aware without being asked.
 const TIME_ZONE = process.env.KAEL_TIMEZONE || 'Europe/Berlin';
@@ -421,6 +423,27 @@ function germanNow() {
   }
 }
 
+// ---- Ascension OS context (read-only bridge from the :3001 app) --------------
+// The OS writes os-context.json atomically into DATA_DIR (active mission, open
+// quests, goals, next action). KAEL folds it into the system prompt so voice
+// conversations know what Varyn is supposed to be doing. Cached with an mtime
+// check so we stat (not parse) at most once per turn; absent file = no block.
+let osCtxCache = { mtimeMs: 0, value: null };
+function readOsContext() {
+  try {
+    const { mtimeMs } = statSync(OS_CONTEXT_FILE);
+    if (mtimeMs !== osCtxCache.mtimeMs) {
+      osCtxCache = { mtimeMs, value: JSON.parse(readFileSync(OS_CONTEXT_FILE, 'utf8')) };
+    }
+    const ctx = osCtxCache.value;
+    // Stale context (>36h) is worse than none — yesterday's mission reads as today's.
+    if (!ctx || !ctx.updatedAt || (Date.now() - Date.parse(ctx.updatedAt)) > 36 * 3600 * 1000) return null;
+    return ctx;
+  } catch {
+    return null;
+  }
+}
+
 // Compose a turn's system prompt: persona + current German time + durable profile
 // + older-conversation summary. The recent window is sent separately as real turns.
 function buildSystemPrompt() {
@@ -464,6 +487,19 @@ function buildSystemPrompt() {
         const steps = t.steps.length ? ` [${t.steps.filter((s) => s.done).length}/${t.steps.length} steps done]` : '';
         return `- (${t.priority}${t.deadline ? `, due ${t.deadline}` : ''}) ${t.text}${steps}`;
       }).join('\n');
+  }
+  const osCtx = readOsContext();
+  if (osCtx) {
+    const quests = Array.isArray(osCtx.openQuests)
+      ? osCtx.openQuests.slice(0, 10).map((q) => `- [${q.type}] ${q.title} (+${q.xp} XP)`).join('\n')
+      : '';
+    sys +=
+      `\n\nFrom Kael Ascension OS (Varyn's quest system, updated ${osCtx.updatedAt}):` +
+      (osCtx.goals ? `\nHis goals: ${osCtx.goals}` : '') +
+      (osCtx.activeMission ? `\nToday's MAIN mission: ${osCtx.activeMission}` : '') +
+      (quests ? `\nOpen quests today:\n${quests}` : '') +
+      (osCtx.nextAction ? `\nIf he asks what to do next, the OS says: ${osCtx.nextAction}` : '') +
+      `\nNudge him toward the main mission when it fits the conversation naturally — you are his mission control, not a nag. If he says he completed a quest, remind him to log or confirm it in Ascension OS so the XP is real.`;
   }
   return sys;
 }
@@ -1436,6 +1472,13 @@ app.post('/api/listen', async (req, res) => {
   await appendFile(LISTEN_FILE, line, 'utf8').catch((err) =>
     console.error('Failed to append listening log:', err.message));
   res.json({ ok: true });
+});
+
+// What the Ascension OS last published to KAEL (transparency: see exactly what
+// the voice hub knows about your quests). 200 {available:false} when absent.
+app.get('/api/os-context', (_req, res) => {
+  const ctx = readOsContext();
+  res.json(ctx ? { available: true, context: ctx } : { available: false, context: null });
 });
 
 // Peek at what KAEL durably remembers (transparency / debugging).
