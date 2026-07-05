@@ -2357,6 +2357,7 @@
     document.getElementById('panicBtn').addEventListener('click', async () => {
       if (!confirm('PANIC: stop screen + webcam watching everywhere, silence the proactive voice, and switch to local-only mode?\n\nNothing is deleted — you re-enable things when ready.')) return;
       try { Awareness.stop(); } catch {}
+      try { if (captureMode === 'listening') exitListeningMode(); } catch {}
       await fetch('/api/panic', { method: 'POST' }).catch(() => {});
       setLocalOnlyUI(true);
       loadSettingsPanel();
@@ -2632,6 +2633,14 @@
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body), signal: ctrl.signal,
           });
+          if (r.status === 409) {
+            // "Awareness is off." — the server is the authority (panic or a
+            // toggle from another device, possibly while our SSE was down):
+            // stop capturing HERE too instead of hammering a closed door
+            this.stop();
+            flashBrainNote('awareness was turned off — capture stopped');
+            return;
+          }
           if (r.ok) {
             const d = await r.json().catch(() => null);
             if (d && d.note) {
@@ -3198,6 +3207,22 @@
         try {
           es = new EventSource('/api/events' + (deviceToken ? '?token=' + encodeURIComponent(deviceToken) : ''));
         } catch { return; }
+        // On every (re)connect, re-sync state that may have changed while the
+        // stream was down — broadcasts are fire-and-forget, so a panic or
+        // permission flip during a network blip would otherwise be lost forever.
+        es.onopen = async () => {
+          try {
+            const p = await fetch('/api/permissions').then((r) => r.json());
+            perms = p.permissions || perms;
+          } catch {}
+          try {
+            const a = await fetch('/api/awareness').then((r) => r.json());
+            if (a && a.enabled === false && Awareness.enabled) {
+              Awareness.stop();
+              flashBrainNote('awareness was turned off while offline — capture stopped');
+            }
+          } catch {}
+        };
         es.onmessage = (ev) => {
           let msg; try { msg = JSON.parse(ev.data); } catch { return; }
           switch (msg.type) {
@@ -3226,8 +3251,10 @@
               speakCoachNudge(msg.text, msg.reason);
               break;
             case 'panic':
-              // another device hit the kill switch — drop capture HERE too
+              // another device hit the kill switch — drop capture HERE too,
+              // including passive listening-mode transcription
               try { Awareness.stop(); } catch {}
+              try { if (captureMode === 'listening') exitListeningMode(); } catch {}
               flashBrainNote('PANIC — all watching stopped, local-only ON');
               if (document.visibilityState === 'visible') loadSettingsPanel();
               break;

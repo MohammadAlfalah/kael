@@ -88,7 +88,6 @@ for (const model of models) {
   }
 }
 
-console.log('\n%-38s %-10s %-8s %-12s %-8s %-9s %s'.replace(/%-?(\d+)s/g, (_, w) => ''.padEnd(0)) || '');
 const pad = (s, w) => String(s).padEnd(w);
 console.log('\n' + pad('MODEL', 38) + pad('COLD', 10) + pad('TTFT', 8) + pad('SPEED', 12) + pad('SIZE', 8) + pad('PLACEMENT', 11) + 'TOTAL');
 for (const r of rows) {

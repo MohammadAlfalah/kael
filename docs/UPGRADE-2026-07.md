@@ -18,8 +18,11 @@ Branch: `upgrade/64gb-brain`, built on top of `c0901c0` (Ascension OS bridge).
 - `scripts/benchmark.mjs` measures cold load / TTFT / tok/s / GPU-vs-RAM split.
 
 **Vision / awareness**
-- Default vision model is now `qwen2.5vl:7b` (sharper screen reading); boot falls
-  back down the candidate list if it isn't installed.
+- The 7B vision model was pulled, benchmarked — and REJECTED for this GPU:
+  measured >5 min per image glance (6.4GB VLM + pinned chat model can't share
+  6GB VRAM; it thrashes). The 3B stays the default (0.5-2s warm, 100% GPU);
+  the 7B remains in the picker for bigger GPUs. Boot now falls back down the
+  vision candidate list if the configured model isn't installed.
 - Every glance now self-rates a CONFIDENCE (high/medium/low): low-confidence
   notes are hedged in the system prompt ("might be"), marked "unsure" in the UI,
   and the coach is told to treat them skeptically.
@@ -79,3 +82,20 @@ harmlessly.
 `POST /api/config` gains `localOnly`; `GET /api/health` gains `localOnly` +
 `chatProfile`; awareness notes gain `confidence`; SSE gains `panic`,
 `localonly.changed`, `coach.snoozed`, and `coach.nudge` now carries `reason`.
+
+## Manual QA checklist (after Ctrl+R in the app window)
+
+- [ ] Say something casual → instant reply, no "thinking with…" line (fast path untouched)
+- [ ] Ask "explain the difference between X and Y" → status shows the 8B, reply streams
+- [ ] Ask a code question → status shows qwen2.5-coder
+- [ ] Settings → Brain profiles: five rows resolve to real models; recent routes listed
+- [ ] Pin chatProfile to fast → code question stays on the 3B; back to auto
+- [ ] Settings → Memory: facts show category chips; hover a chip → learned/confirmed dates; ✕ still deletes
+- [ ] Settings → Privacy: Export downloads a JSON with your facts in it
+- [ ] Local-only ON → header Claude toggle refuses; premium voice falls back to browser voice; "search the web for…" answers from knowledge instead
+- [ ] PANIC (with awareness running) → capture badge disappears, permissions boxes untick, local-only flips on — on the phone too if paired
+- [ ] Awareness on → notes show "· unsure" only on hard-to-read screens; ✎ correction still works
+- [ ] Wait for a nudge → bubble shows "why: …" + 😴 1h + ✗ off-base; snooze silences it
+- [ ] Quiet hours 23–08 → no nudges in that window
+- [ ] Reminder from chat ("remind me in 2 minutes to stretch") still fires out loud
+- [ ] Reboot → watchdog brings everything back; `/api/health` shows `supervised:true`

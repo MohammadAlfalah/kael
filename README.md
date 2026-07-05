@@ -51,7 +51,7 @@ each message to the right brain (all optional — see [`docs/MODELS.md`](docs/MO
 ollama pull huihui_ai/qwen3-abliterated:8b   # balanced reasoning
 ollama pull qwen3:14b                        # deep reasoning
 ollama pull qwen2.5-coder:7b                 # coding
-ollama pull qwen2.5vl:7b                     # ambient awareness (vision)
+ollama pull qwen2.5vl:3b                     # ambient awareness (vision)
 node scripts/benchmark.mjs                   # see what your hardware actually does
 ```
 
@@ -80,7 +80,7 @@ Everything is optional:
 | `ANTHROPIC_API_KEY` | Enables the Claude switch. Without it, KAEL stays local. |
 | `OPENAI_API_KEY` | Enables the premium neural voice. Omit for the free browser voice. |
 | `BRAVE_API_KEY` | Sharper web search. Omit and it uses the free DuckDuckGo fallback. |
-| `AWARENESS_MODEL` | Local vision model for ambient awareness (default `qwen2.5vl:7b`, auto-falls back to `:3b`). |
+| `AWARENESS_MODEL` | Local vision model for ambient awareness (default `qwen2.5vl:3b`; boot falls back down the vision candidates if it's missing). |
 | `KAEL_TIMEZONE` | IANA zone it's time-aware of (default `Europe/Berlin`). |
 | `PORT` | Default `3000`. |
 | `KAEL_HOST` | Bind address (default `127.0.0.1` — localhost only). Set `0.0.0.0` to reach KAEL from your phone/tablet; non-local devices must then pair with the device token. |

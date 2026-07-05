@@ -93,6 +93,8 @@ try {
   check('profiles refuses vision override (lives in Awareness)', pVis.status === 400);
   const pGhost = await fetch(`${BASE}/api/profiles`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profile: 'deep', model: 'definitely-not-installed-xyz' }) });
   check('profiles refuses non-installed override', pGhost.status === 400);
+  const pCloud = await fetch(`${BASE}/api/profiles`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profile: 'deep', model: 'gpt-oss:120b-cloud' }) });
+  check('profiles refuses *-cloud override', pCloud.status === 400);
 
   // ---- memory v2 (fact objects + string back-compat) ----
   const mPost = await j(await fetch(`${BASE}/api/memory`, {
@@ -130,6 +132,11 @@ try {
     panic && ['awareness', 'webcam', 'screen', 'training'].every((k) => panic.permissions?.[k] === false));
   const hAfter = await j(await fetch(`${BASE}/api/health`));
   check('awareness off after panic', hAfter?.awareness?.enabled === false);
+  // panic's "stays off" must hold server-side: a stale client can't re-enable
+  const reEnable = await fetch(`${BASE}/api/awareness`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true }) });
+  check('awareness re-enable blocked after panic (server-side)', reEnable.status === 403);
+  const cloudModel = await fetch(`${BASE}/api/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'gpt-oss:120b-cloud' }) });
+  check('cloud daily-driver blocked while local-only (from panic)', [400, 403].includes(cloudModel.status));   // 400 if Ollama down (not installed), 403 if up
 
   // ---- coach: snooze / feedback / nudge log / quiet hours ----
   const sn = await j(await fetch(`${BASE}/api/coach/snooze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ minutes: 30 }) }));
@@ -146,6 +153,9 @@ try {
   check('quiet hours rejects bad hour', qhBad.status === 400);
   const coach2 = await j(await fetch(`${BASE}/api/coach`));
   check('quiet hours persisted in coach state', coach2?.quietFrom === 23 && coach2?.quietTo === 8);
+  await fetch(`${BASE}/api/coach`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ quietFrom: 22 }) });
+  const coach3 = await j(await fetch(`${BASE}/api/coach`));
+  check('one-field quiet-hours update keeps the other end', coach3?.quietFrom === 22 && coach3?.quietTo === 8);
 
   // ---- tasks + schedules still work (regression) ----
   const t = await j(await fetch(`${BASE}/api/tasks`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'smoke test task' }) }));
@@ -159,7 +169,7 @@ try {
   const raw = JSON.parse(await readFile(path.join(dataDir, 'config.json'), 'utf8'));
   check('config.json persists localOnly (from panic)', raw?.localOnly === true);
   check('config.json persists profiles block', raw?.profiles?.chatProfile === 'fast');
-  check('config.json persists quiet hours', raw?.coaching?.quietFrom === 23);
+  check('config.json persists quiet hours', raw?.coaching?.quietFrom === 22 && raw?.coaching?.quietTo === 8);
 } catch (err) {
   failed++;
   console.error('  ✗ test run crashed:', err.message);

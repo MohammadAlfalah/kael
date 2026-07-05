@@ -77,13 +77,17 @@ const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 //   14B  → split GPU+RAM, ~5-10 t/s  (deep: only when quality beats latency)
 // The 64GB of RAM is what lets the bigger tiers load at all and stay warm in the
 // OS file cache — on the old 16GB they would have crowded out Windows itself.
-const PROFILE_KEEP_ALIVE = process.env.PROFILE_KEEP_ALIVE || '15m';
+// Same numeric coercion as OLLAMA_KEEP_ALIVE: "-1" as a string is an Ollama 400.
+const PROFILE_KEEP_ALIVE_RAW = (process.env.PROFILE_KEEP_ALIVE || '15m').trim();
+const PROFILE_KEEP_ALIVE = /^-?\d+$/.test(PROFILE_KEEP_ALIVE_RAW)
+  ? Number(PROFILE_KEEP_ALIVE_RAW)
+  : PROFILE_KEEP_ALIVE_RAW;
 const MODEL_PROFILES = {
   fast:     { label: 'Fast — snappy daily voice replies',          candidates: [],                                                            ctx: 8192 },
   balanced: { label: 'Balanced — smarter everyday reasoning (8B)', candidates: ['huihui_ai/qwen3-abliterated:8b', 'qwen3:8b', 'llama3.1:8b'], ctx: 16384 },
   deep:     { label: 'Deep — hard reasoning & planning (14B)',     candidates: ['qwen3:14b', 'deepseek-r1:14b', 'qwen3:8b', 'huihui_ai/qwen3-abliterated:8b'], ctx: 24576 },
   coding:   { label: 'Coding — code questions, review, debugging', candidates: ['qwen2.5-coder:7b', 'qwen2.5-coder:14b', 'qwen3:14b'],        ctx: 16384 },
-  vision:   { label: 'Vision — screen & webcam understanding',     candidates: ['qwen2.5vl:7b', 'qwen2.5vl:3b'],                              ctx: 8192 },
+  vision:   { label: 'Vision — screen & webcam understanding',     candidates: ['qwen2.5vl:3b', 'qwen2.5vl:7b'],                              ctx: 8192 },
 };
 const CHAT_PROFILES = ['auto', 'fast', 'balanced', 'deep', 'coding'];
 // Owner overrides (Settings → Brain profiles): pin a specific installed model to
@@ -110,10 +114,12 @@ async function resolveProfile(name) {
   const p = MODEL_PROFILES[name];
   if (!p) return { name: 'fast', model: OLLAMA_MODEL, ctx: OLLAMA_CTX };
   const installed = await installedModelsCached();
-  const has = (m) => installed.some((n) => n === m || n.startsWith(`${m}:`));
+  // "*-cloud" models run on Ollama's servers — in local-only mode they don't
+  // count as usable, so resolution falls through to a genuinely local model
+  const usable = (m) => installed.some((n) => n === m || n.startsWith(`${m}:`)) && !(localOnly && isCloudModel(m));
   const override = profileOverrides[name];
-  if (override && has(override)) return { name, model: override, ctx: p.ctx };
-  for (const c of p.candidates) if (has(c)) return { name, model: c, ctx: p.ctx };
+  if (override && usable(override)) return { name, model: override, ctx: p.ctx };
+  for (const c of p.candidates) if (usable(c)) return { name, model: c, ctx: p.ctx };
   return { name: 'fast', model: OLLAMA_MODEL, ctx: OLLAMA_CTX, fellBack: name !== 'fast' };
 }
 
@@ -129,6 +135,16 @@ function pickChatProfile(message) {
   if (BALANCED_HINT.test(message) || message.length > 200) return 'balanced';
   return 'fast';
 }
+// The guaranteed-LOCAL model for internal jobs (memory folds, local-only swaps):
+// the daily driver if it's genuinely local, else the first installed non-cloud
+// model. Throws rather than silently leaking if nothing local is installed.
+async function localSafeModel() {
+  if (!isCloudModel(OLLAMA_MODEL)) return OLLAMA_MODEL;
+  const local = (await installedModelsCached()).find((n) => !isCloudModel(n));
+  if (!local) throw new Error('no local model installed');
+  return local;
+}
+
 async function routeChat(message) {
   const want = chatProfile === 'auto' ? pickChatProfile(message) : chatProfile;
   const r = await resolveProfile(want);
@@ -146,10 +162,12 @@ async function routeChat(message) {
 // once warm, glances in ~0.5s for almost no GPU duty; the only cost is a one-time
 // ~60s cold load when awareness first starts and ~2.2GB VRAM while it's on.
 // keep_alive holds it warm between glances; it unloads when awareness is turned off.
-// Default is the 7B — markedly better screen reading (small text, similar-looking
-// apps) and the 64GB of RAM absorbs what doesn't fit in VRAM. Boot falls back to
-// the 3B automatically if the 7B isn't pulled (see ensureVisionModel).
-const AWARENESS_MODEL_DEFAULT = process.env.AWARENESS_MODEL || 'qwen2.5vl:7b';
+// Default stays the 3B — measured on this box (2026-07-05): the 7B with an
+// image takes >5 MINUTES per glance, because 7B-vision (6.4GB) + the pinned 3B
+// chat model can't share the 6GB card, so every glance thrashes VRAM. The 3B
+// glances in ~0.5-2s warm at 100% GPU and coexists with chat. The 7B stays in
+// the picker for machines with bigger GPUs.
+const AWARENESS_MODEL_DEFAULT = process.env.AWARENESS_MODEL || 'qwen2.5vl:3b';
 const AWARENESS_KEEP_ALIVE = process.env.AWARENESS_KEEP_ALIVE || '10m';
 const AWARENESS_MIN_MS = 60000;       // never glance more than once a minute
 const AWARENESS_MAX_MS = 1800000;     // …or less than once every 30 min
@@ -653,11 +671,18 @@ async function foldIntoMemory(olderMessages) {
     `Each fact's "category" is one of: identity, preference, project, goal, habit, other. ` +
     `Only include what was actually stated or clearly implied; never invent. Keep each fact short.`;
 
+  // Memory upkeep is promised to be local and free, ALWAYS — this instruction
+  // carries the whole summary + every durable fact, so if the daily driver is a
+  // "*-cloud" model, fold with a provably local one instead.
+  const foldModel = isCloudModel(OLLAMA_MODEL)
+    ? await localSafeModel().catch(() => OLLAMA_MODEL)
+    : OLLAMA_MODEL;
+  if (isCloudModel(foldModel)) throw new Error('no local model available for memory upkeep');
   const res = await fetch(`${OLLAMA_URL}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: OLLAMA_MODEL,
+      model: foldModel,
       format: 'json',
       stream: false,
       keep_alive: OLLAMA_KEEP_ALIVE,
@@ -1381,6 +1406,11 @@ function formatResults(query, results) {
 async function streamFromOllama(messages, send, signal, system, route) {
   const model = route?.model || OLLAMA_MODEL;
   const ctx = route?.ctx || OLLAMA_CTX;
+  // final backstop for the local-only promise: even if a cloud model got picked
+  // as the daily driver before the mode was switched on, refuse to use it
+  if (localOnly && isCloudModel(model)) {
+    throw new Error(`local-only mode is on, and "${model}" is an Ollama cloud model — pick a local model in Settings → Brain.`);
+  }
   const opts = { num_ctx: ctx };
   if (sessionTemperature != null) opts.temperature = sessionTemperature;
   const res = await fetch(`${OLLAMA_URL}/api/chat`, {
@@ -1469,6 +1499,7 @@ function friendlyError(err) {
     if (/not found|no such model|try pulling/i.test(m)) {
       return `The local model "${OLLAMA_MODEL}" is not installed. In a terminal, run: ollama pull ${OLLAMA_MODEL}`;
     }
+    if (/local-only mode/i.test(m)) return m;   // the guard's message is already user-facing
     return 'Something went wrong with the local model. Please try again.';
   }
   if (/ANTHROPIC_API_KEY/i.test(m)) return m;
@@ -1676,9 +1707,12 @@ app.get('/api/os-context', (_req, res) => {
 });
 
 // Peek at what KAEL durably remembers (transparency / debugging).
+// `profileTexts` is a plain-string view for external consumers (e.g. the
+// Ascension OS hub import) that predate the v2 fact objects.
 app.get('/api/memory', (_req, res) => {
   res.json({
     profile: memory.profile,
+    profileTexts: memory.profile.map(factText),
     summary: memory.summary,
     recentCount: memory.recent.length,
   });
@@ -1810,6 +1844,9 @@ app.post('/api/config', async (req, res) => {
     if (!models.some((n) => n === next || n.startsWith(`${next}:`))) {
       return res.status(400).json({ error: `Model "${next}" is not installed. Pull it with: ollama pull ${next}` });
     }
+    if (localOnly && isCloudModel(next)) {
+      return res.status(403).json({ error: `"${next}" is an Ollama cloud model — blocked while local-only mode is on.` });
+    }
     OLLAMA_MODEL = next;
     changed = true;
     // Don't preload mid-reply: warming a (possibly different) model while a turn
@@ -1871,6 +1908,11 @@ app.post('/api/profiles', async (req, res) => {
       changed = true;
     } else {
       const m = String(b.model);
+      // profiles are the LOCAL brain lineup — cloud has its own explicit paths
+      // (the Claude toggle, the coach picker), so a "*-cloud" pin is refused
+      if (isCloudModel(m)) {
+        return res.status(400).json({ error: `"${m}" runs on Ollama's servers — profiles only take local models.` });
+      }
       const models = await installedModels();
       if (!models.some((n) => n === m || n.startsWith(`${m}:`))) {
         return res.status(400).json({ error: `Model "${m}" is not installed. Pull it with: ollama pull ${m}` });
@@ -1976,8 +2018,9 @@ async function describeActivity(images, screenText) {
 async function localChat(messages, opts = {}) {
   let model = opts.model || OLLAMA_MODEL;
   // local-only mode: a "*-cloud" model would ship this text off the machine —
-  // swap in the local chat model instead (weaker, but nothing leaves the box)
-  if (localOnly && isCloudModel(model)) model = OLLAMA_MODEL;
+  // swap in a PROVABLY local model instead (the daily driver itself could be a
+  // cloud model, so the swap target is verified, not assumed)
+  if (localOnly && isCloudModel(model)) model = await localSafeModel();
   const body = {
     model,
     stream: false,
@@ -2070,10 +2113,17 @@ Reply with STRICT JSON only (no prose, no code fence):
   // QUIET-or-sentence contract) so a weaker local coach still works.
   let text = '', reason = '';
   const json = parseJsonLoose(out);
-  if (json && typeof json.speak === 'boolean') {
-    if (!json.speak) return null;
+  // small local models emit "speak": "true" (string) — coerce, don't discard
+  const speak = json && (json.speak === true || json.speak === 'true' ? true
+    : json.speak === false || json.speak === 'false' ? false : null);
+  if (json && typeof speak === 'boolean') {
+    if (!speak) return null;
     text = String(json.text || '').trim();
     reason = String(json.reason || '').trim().slice(0, 120);
+  } else if (/[{}"]|\bspeak\b/i.test(out)) {
+    // a FAILED attempt at the JSON contract (trailing comma, truncation…) must
+    // go quiet — never read malformed JSON out loud through the speakers
+    return null;
   } else {
     text = out.replace(/^["'\s]+|["'\s]+$/g, '');
     if (!text || text.replace(/[^A-Za-z]/g, '').toUpperCase() === 'QUIET') return null;
@@ -2221,7 +2271,15 @@ app.get('/api/awareness', async (_req, res) => {
 app.post('/api/awareness', async (req, res) => {
   const b = req.body || {};
   let changed = false;
-  if ('enabled' in b) { awareness.enabled = b.enabled === true; changed = true; }
+  if ('enabled' in b) {
+    // the switchboard must hold SERVER-side: a device with a stale permissions
+    // cache (e.g. it missed the panic broadcast) can't re-enable watching
+    if (b.enabled === true && permissions.awareness === false) {
+      return res.status(403).json({ error: 'Awareness is switched off in KAEL\'s permissions — re-enable it there first.' });
+    }
+    awareness.enabled = b.enabled === true;
+    changed = true;
+  }
   if ('intervalMs' in b) {
     const n = Number(b.intervalMs);
     if (Number.isFinite(n)) {
@@ -2253,11 +2311,16 @@ app.post('/api/awareness', async (req, res) => {
 let lastObserveAt = 0;
 app.post('/api/awareness/observe', async (req, res) => {
   if (!awareness.enabled) return res.status(409).json({ error: 'Awareness is off.' });
+  // server-side permission gate (not just the client's cached copy)
+  if (permissions.awareness === false || permissions.screen === false) {
+    return res.status(409).json({ error: 'Awareness is off.' });
+  }
   // Enforce the privacy promise: never send frames to a non-local vision model —
   // neither via a remote OLLAMA_URL nor via an Ollama "*-cloud" model (which runs
-  // remotely even though the URL is localhost).
-  if ((!OLLAMA_IS_LOCAL || isCloudModel(awareness.model)) && !AWARENESS_ALLOW_REMOTE) {
-    return res.status(403).json({ error: 'Awareness is blocked: the vision model is not local, so frames would leave this machine. Pick a local model, or set AWARENESS_ALLOW_REMOTE=1 to override.' });
+  // remotely even though the URL is localhost). Local-only mode OUTRANKS the
+  // AWARENESS_ALLOW_REMOTE escape hatch.
+  if ((!OLLAMA_IS_LOCAL || isCloudModel(awareness.model)) && (localOnly || !AWARENESS_ALLOW_REMOTE)) {
+    return res.status(403).json({ error: 'Awareness is blocked: the vision model is not local, so frames would leave this machine. Pick a local model.' });
   }
   if (observing) return res.status(202).json({ skipped: 'busy' });            // a glance is already running
   if (Date.now() - lastObserveAt < AWARENESS_MIN_MS) return res.status(202).json({ skipped: 'throttled' });
@@ -2266,15 +2329,23 @@ app.post('/api/awareness/observe', async (req, res) => {
   if (activeController) return res.status(202).json({ skipped: 'chat-busy' });
   const strip = (s) => (typeof s === 'string' ? s.replace(/^data:[^,]+,/, '') : '');
   const screenB64 = strip(req.body?.screen);
-  const images = [screenB64, strip(req.body?.webcam)].filter(Boolean);
+  // webcam permission holds server-side too — a frame from a stale client is dropped
+  const webcamB64 = permissions.webcam === false ? '' : strip(req.body?.webcam);
+  const images = [screenB64, webcamB64].filter(Boolean);
   if (!images.length) return res.status(400).json({ error: 'Need a screen or webcam frame.' });
   observing = true;
   lastObserveAt = Date.now();
   try {
     const screenText = typeof req.body?.screenText === 'string' ? req.body.screenText : '';
     let { note, mood, confidence } = await describeActivity(images, screenText);
+    // panic fence: if awareness was killed while the vision call was in flight,
+    // the result must not be stored, broadcast, or fed back into the prompt
+    if (!awareness.enabled) return res.status(409).json({ error: 'Awareness was turned off mid-glance.' });
     note = note.slice(0, 300);   // sanity length cap only — redaction is OFF (owner wants full control)
     mood = (mood || '').slice(0, 40);
+    // the 3B sometimes invents a MOOD line with no webcam frame at all — a mood
+    // can only come from an actual face, so without a webcam frame there is none
+    if (!webcamB64) mood = '';
     if (note) {
       awareness.latestNote = note;
       awareness.latestMood = mood;
@@ -2349,10 +2420,12 @@ app.post('/api/coach', async (req, res) => {
     changed = true;
   }
   if ('intensity' in b && ['chill', 'balanced', 'strict'].includes(b.intensity)) { coaching.intensity = b.intensity; changed = true; }
-  // quiet hours: both ends 0-23, or null/'' to clear
+  // quiet hours: both ends 0-23, null/'' to clear; a missing key keeps its
+  // current value (one-field updates must not silently wipe the other end)
   if ('quietFrom' in b || 'quietTo' in b) {
     const parse = (v) => (v == null || v === '' ? null : (Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= 23 ? Number(v) : undefined));
-    const f = parse(b.quietFrom), t = parse(b.quietTo);
+    const f = 'quietFrom' in b ? parse(b.quietFrom) : coaching.quietFrom;
+    const t = 'quietTo' in b ? parse(b.quietTo) : coaching.quietTo;
     if (f === undefined || t === undefined) return res.status(400).json({ error: 'Quiet hours must be whole hours 0-23 (or empty to clear).' });
     coaching.quietFrom = f; coaching.quietTo = t;
     changed = true;

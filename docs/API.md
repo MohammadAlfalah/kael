@@ -748,3 +748,49 @@ Same transport as chat (POST + fetch-streamed SSE). Pre-flight failures are plai
 | `error` | `{"type":"error","text":"Planning failed: chat 500"}` | The run failed; also logged. Terminal. |
 
 Mirrored on the event bus: `plan.started` / `plan.step` / `plan.done` carry the same run to *other* devices, so a plan kicked off on the PC shows progress on the phone.
+
+---
+
+## v1.1 additions — the 64GB brain upgrade (2026-07)
+
+Everything below ships with the model-profile upgrade. Auth: **standard** on all of them. Full background: [`UPGRADE-2026-07.md`](UPGRADE-2026-07.md), [`MODELS.md`](MODELS.md), [`PRIVACY.md`](PRIVACY.md).
+
+### GET `/api/profiles`
+
+Reports the five model profiles (fast/balanced/deep/coding/vision) with what each resolves to **right now** given installed models, plus routing transparency.
+
+```json
+{ "chatProfile": "auto",
+  "profiles": { "deep": { "label": "…", "ctx": 24576, "candidates": ["qwen3:14b", "…"],
+                           "override": null, "resolved": "qwen3:14b", "fellBack": false, "missing": [] }, "…": {} },
+  "installed": ["…"], "recentRoutes": [ { "at": "…", "wanted": "coding", "profile": "coding", "model": "qwen2.5-coder:7b" } ],
+  "localOnly": false }
+```
+
+### POST `/api/profiles`
+
+`{"chatProfile": "auto"|"fast"|"balanced"|"deep"|"coding"}` picks which brain answers chat (`auto` routes per message). `{"profile": "<name>", "model": "<installed>"|null}` pins/unpins a model onto a profile (400 if not installed; the vision profile is managed via `/api/awareness` instead). Persists to `config.json`.
+
+### POST `/api/panic`
+
+The emergency privacy stop. Disables awareness + proactive voice, clears the live activity note, forces permissions `awareness/webcam/screen/training` off, turns **local-only mode on**, broadcasts `panic` + `permissions.changed` + `localonly.changed` so every device drops capture immediately. Returns `{"ok":true, "localOnly":true, "permissions":{…}}`. Nothing is deleted.
+
+### GET `/api/memory/export`
+
+Downloads everything KAEL knows as one JSON attachment: memory (v2 facts + summary + recent), learned profile, tasks, schedules, permissions, last 200 nudges, last 500 awareness notes. The full transcript stays in `data/transcript.jsonl` (referenced, not inlined).
+
+### POST `/api/coach/snooze` · POST `/api/coach/feedback` · GET `/api/coach/nudges`
+
+- `snooze` `{"minutes": 60}` (clamped 5–1440) → `{"ok":true,"until":"<iso>"}`; broadcasts `coach.snoozed`.
+- `feedback` `{"text": "<the nudge>"}` marks a nudge off-base; logged to `nudges.jsonl` and fed into the next coaching judgment.
+- `nudges` → `{"nudges":[{"at","text","reason","intensity"} | {"type":"feedback",…}]}` (last 30).
+
+### Changed contracts
+
+- **`POST /api/config`** also accepts `"localOnly": true|false` — blocks Claude, premium TTS, web search, and `*-cloud` coach models at the server; `GET /api/config` reports it.
+- **`POST /api/coach`** also accepts `"quietFrom"`/`"quietTo"` (hours 0–23, both or null) — a do-not-disturb window for the proactive voice; `GET /api/coach` reports them plus `snoozedUntil`.
+- **`GET /api/memory`** facts are now objects `{"text","category","source","addedAt","lastConfirmed"}` (categories: identity/preference/project/goal/habit/other). `POST /api/memory` accepts strings or objects.
+- **`/api/awareness/observe`** response and `awareness.note` event gain `"confidence": "high"|"medium"|"low"|""`; the `coach` field is now `{"text","reason"}`.
+- **`GET /api/health`** gains `"localOnly"` and `"chatProfile"`.
+- **`/api/chat`** emits a `{"type":"status","text":"thinking with <model> (<profile>)…"}` frame when a turn routes to a non-default brain.
+- **New SSE events:** `panic {}`, `localonly.changed {localOnly}`, `coach.snoozed {until,minutes}`; `coach.nudge` now carries `reason`.

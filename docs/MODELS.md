@@ -11,10 +11,28 @@ it has **one brain per job**, picked automatically per message (or pinned by you
 | **balanced** | `huihui_ai/qwen3-abliterated:8b` | 5.0GB | 16k | ~15-30 tok/s | "explain / compare / help me decide", planner |
 | **deep** | `qwen3:14b` | 9.3GB | 24k | ~5-10 tok/s (GPU+RAM split) | architecture, strategy, hard reasoning |
 | **coding** | `qwen2.5-coder:7b` | 4.7GB | 16k | ~15-30 tok/s | code questions, debugging, review |
-| **vision** | `qwen2.5vl:7b` (falls back to `:3b`) | 6.0GB | 8k | one glance ≈ 1-3s warm | screen + webcam awareness |
+| **vision** | `qwen2.5vl:3b` | 3.2GB | 8k | one glance ≈ 0.5-2s warm, 100% GPU | screen + webcam awareness |
 
 \* RTX 3060 Laptop 6GB VRAM + i7-11800H + 64GB DDR4-3200. Run
 `node scripts/benchmark.mjs` for live numbers on your box.
+
+Measured on this machine, 2026-07-05 (warm, ctx 8192):
+
+| Model | TTFT | Speed | Placement |
+|---|---|---|---|
+| `huihui_ai/llama3.2-abliterate` (fast) | 0.32s | **69.7 tok/s** | ~100% GPU |
+| `qwen2.5-coder:7b` (coding) | 0.44s | 14.6 tok/s | 79% GPU |
+| `huihui_ai/qwen3-abliterated:8b` (balanced) | 0.49s | 8.3 tok/s | 66% GPU |
+| `qwen3:14b` (deep) | 0.82s | 2.7 tok/s | 39% GPU |
+| `qwen2.5vl:3b` (vision) | 0.78s | 61.2 tok/s | 100% GPU |
+
+Honesty notes: **deep (14B) is a "go get a coffee" tier** — ~2 words/sec. It's
+routed only on explicitly deep asks, and it's genuinely smarter; pin `chatProfile`
+to `fast`/`balanced` if you'd rather never wait. **Vision stays the 3B**: the 7B
+VLM was measured taking >5 min per image glance here, because 7B-vision (6.4GB)
+plus the pinned chat model cannot share the 6GB card — it thrashes. The 7B is
+only worth pulling on GPUs with more VRAM; on this box the learned-profile
+personalization is what buys vision accuracy, not parameters.
 
 ## Why these sizes (the honest hardware math)
 
