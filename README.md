@@ -8,17 +8,19 @@ The whole front end is one `public/index.html` — plain HTML/CSS/vanilla JS, no
 
 ## What it does
 
+- **One brain per job (model profiles).** KAEL routes each message to the right local model: a snappy 3B for everyday voice chat, an 8B for "explain / compare", a coder 7B for code questions, a 14B for hard reasoning — picked automatically per message (or pinned), with a visible "thinking with …" status and a routing log so you always know which brain answered. Missing models fall back gracefully; nothing breaks if a tier isn't pulled. See [`docs/MODELS.md`](docs/MODELS.md).
 - **Push-to-talk or open mic.** Default is hold-Space-to-talk, so the mic is only ever live while I'm holding a key — no wake word, no always-listening. Rebind it to any key or mouse button in Settings, or switch to hands-free open mic where it sends after you pause and re-arms after it replies.
 - **Speaks its replies, and starts speaking early.** Answers are tuned short (one to three sentences, since they're read aloud) and stream sentence-by-sentence so there's no dead pause. It picks the best neural browser voice by default; drop in an OpenAI key and Settings unlocks `tts-1-hd` neural TTS (the key stays server-side — the browser only gets audio).
 - **Web search with no setup.** When a question needs current info it searches on its own. It falls back to a free DuckDuckGo scrape so search works with zero config; add a Brave Search API key for sharper results and higher limits.
-- **Persistent memory.** It remembers across restarts and reboots — a profile of durable facts plus a rolling summary of older chats, written to disk under `data/` (gitignored). The summarizing runs on the free local model, so it costs no tokens and stays private. Only a bounded window + the summary ever goes to the model, so context never overflows.
+- **Persistent memory.** It remembers across restarts and reboots — durable facts (each with a category, source, and learned/confirmed dates), plus a rolling summary of older chats, written to disk under `data/` (gitignored). The summarizing runs on the free local model, so it costs no tokens and stays private. Only a bounded window + the summary ever goes to the model, so context never overflows. Review, edit, delete, or **export everything** from Settings.
 - **Ambient awareness (off by default).** It can glance at a screen I share plus a quick webcam frame every few minutes, run them through a **local** vision model (`qwen2.5vl:3b`), and keep a one-line note of what I'm doing — so it has real context. Frames go only to the local model and are never saved (unless you explicitly opt in to training-data collection, which stores screenshots locally under `data/training/`), and it flat-out refuses to send frames anywhere remote — both non-local Ollama URLs and Ollama's `*-cloud` models are blocked. I removed the sensitive-screen auto-skip on purpose: it describes whatever is on my screen, my choice.
-- **Proactive coaching.** Tell it what I'm focusing on and it watches my activity against that, speaking up *sparingly* when I drift or grind too long. A cooldown keeps it from nagging.
+- **Proactive coaching.** Tell it what I'm focusing on and it watches my activity against that, speaking up *sparingly* when I drift or grind too long. Every nudge shows **why** it spoke, with snooze and "off-base" buttons (the coach learns from those); cooldowns, quiet hours, and a nudge log keep it a presence, not a nag.
 - **Conversational task manager.** Mention a task in chat ("finish X by Friday, email my prof tonight") and it captures both with deadlines, prioritizes them, breaks them into steps, and answers "what should I work on?" from the list.
 - **Reminders & routines.** "Remind me at 5pm to email my prof" just works — chat extraction turns it into a schedule that fires *out loud* on every connected device. One-offs and daily/weekly routines, managed in Settings or by voice. Reminders missed while KAEL was off are skipped with a note, not blurted hours late.
 - **A planner.** Say "plan: …" and KAEL decomposes the goal into tool steps (web search / remember / add task / set reminder), runs them one by one with live progress, and speaks a synthesized answer. Bounded on purpose: ≤5 steps, one plan at a time, every run logged.
 - **Use it from your phone.** Set `KAEL_HOST=0.0.0.0`, open the pairing link from Settings → Devices on your phone (same Wi-Fi), and Add to Home Screen — the PWA installs full-screen and stays paired via a device token. Everything syncs live over one event stream (SSE): tasks, reminders, nudges, provider flips.
 - **Permissions switchboard.** One place in Settings to switch capabilities off — web search, the paid backends, webcam, screen, training collection, remote access — enforced server-side, so "off" means off everywhere.
+- **Privacy controls with teeth.** A **local-only mode** that blocks every cloud path at the server (Claude, OpenAI voice, web search, the cloud coach) and a **PANIC button** that instantly stops all screen/webcam watching on every device and flips local-only on. Exactly what can ever leave the machine is documented in [`docs/PRIVACY.md`](docs/PRIVACY.md).
 - **Runs 24/7.** A watchdog (`scripts/watchdog.mjs`) supervises the server: restart on crash with backoff, restart when hung (health checks), logs under `data/logs/`, daily backups of every store under `data/backups/`, and unclean-shutdown detection so a crash is visible, not silent.
 - **A 3D orb.** The status indicator is a WebGL energy core (Three.js) that reacts to listening / thinking / speaking, with a 2D fallback when WebGL isn't available.
 - **Installable as a PWA** — manifest + service worker, so it runs in its own window with the orb icon.
@@ -40,7 +42,17 @@ You need [Ollama](https://ollama.com) and a model — that's the free brain:
 
 ```bash
 ollama pull llama3.2          # small, fast, runs on a modest laptop GPU
-ollama pull qwen2.5vl:3b      # only if you want the ambient-awareness feature
+```
+
+That's enough. With more RAM, pull the full profile lineup so KAEL can route
+each message to the right brain (all optional — see [`docs/MODELS.md`](docs/MODELS.md)):
+
+```bash
+ollama pull huihui_ai/qwen3-abliterated:8b   # balanced reasoning
+ollama pull qwen3:14b                        # deep reasoning
+ollama pull qwen2.5-coder:7b                 # coding
+ollama pull qwen2.5vl:7b                     # ambient awareness (vision)
+node scripts/benchmark.mjs                   # see what your hardware actually does
 ```
 
 Then:
@@ -68,7 +80,7 @@ Everything is optional:
 | `ANTHROPIC_API_KEY` | Enables the Claude switch. Without it, KAEL stays local. |
 | `OPENAI_API_KEY` | Enables the premium neural voice. Omit for the free browser voice. |
 | `BRAVE_API_KEY` | Sharper web search. Omit and it uses the free DuckDuckGo fallback. |
-| `AWARENESS_MODEL` | Local vision model for ambient awareness (default `qwen2.5vl:3b`). |
+| `AWARENESS_MODEL` | Local vision model for ambient awareness (default `qwen2.5vl:7b`, auto-falls back to `:3b`). |
 | `KAEL_TIMEZONE` | IANA zone it's time-aware of (default `Europe/Berlin`). |
 | `PORT` | Default `3000`. |
 | `KAEL_HOST` | Bind address (default `127.0.0.1` — localhost only). Set `0.0.0.0` to reach KAEL from your phone/tablet; non-local devices must then pair with the device token. |

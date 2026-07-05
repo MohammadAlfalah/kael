@@ -639,6 +639,21 @@
       </div>
 
       <div class="setting-row">
+        <span class="label">Brain profiles <span class="tag-local" id="profileTag">auto</span></span>
+        <div class="row">
+          <select id="chatProfileSelect" title="Which brain answers chat">
+            <option value="auto">auto — route each message</option>
+            <option value="fast">fast — always the snappy model</option>
+            <option value="balanced">balanced — smarter (8B)</option>
+            <option value="deep">deep — strongest reasoning (14B)</option>
+            <option value="coding">coding — code specialist</option>
+          </select>
+        </div>
+        <div class="aware-log" id="profileList" style="margin-top:8px;"></div>
+        <span class="hint"><b>Auto</b> picks a brain per message: quick chat stays on the fast model (instant), code questions go to the coder, "explain / compare" to the balanced 8B, hard planning to the deep 14B. Bigger brains are slower (the 14B ≈ 5-10 words/sec on this GPU) but noticeably sharper — the 64GB RAM is what lets them load at all. All of them run 100% locally. Below: what each profile resolves to right now, and which brain answered your recent messages.</span>
+      </div>
+
+      <div class="setting-row">
         <span class="label">Persona</span>
         <textarea id="personaInput" rows="5" class="persona-input"></textarea>
         <div class="row" style="margin-top:6px;">
@@ -693,6 +708,13 @@
           </select>
           <select id="coachModel" title="Proactive brain"></select>
         </div>
+        <div class="row" style="margin-top:8px; flex-wrap:wrap; align-items:center; gap:8px;">
+          <span class="label" style="font-size:12px; min-width:84px;">Quiet hours</span>
+          <select id="quietFrom" title="Quiet from"><option value="">—</option></select>
+          <span class="muted-count">to</span>
+          <select id="quietTo" title="Quiet until"><option value="">—</option></select>
+          <span class="muted-count" id="snoozeState"></span>
+        </div>
         <span class="hint">KAEL speaks up <b>on its own</b> — greetings, observations, check-ins, encouragement — based on what it sees you doing, not only when you talk to it. It <b>picks up your focus automatically</b> from what you tell it during the day (just say or type <i>“I'm gonna work on the kael project”</i> and it sets the focus itself) — or type one in the box above. With a focus, it also keeps you on track (nudges drift, suggests breaks, offers help when you're stuck). <b>Needs awareness on.</b> The <b>brain</b> reasons over your activity timeline, the soft webcam mood read, and (for auto-focus) your message — the small local model is too weak to judge this, so it defaults to your <b>gpt-oss cloud</b> model, meaning that text goes to it for the decision. Pick a local model for full privacy (but it'll rarely speak). With Proactive <b>off</b>, nothing here ever goes to the cloud model — task capture from chat runs on the local model instead.</span>
       </div>
 
@@ -716,6 +738,18 @@
           <button class="mini-btn" id="schedAdd">Add</button>
         </div>
         <span class="hint">One-off reminders and routines that fire <b>out loud on every connected device</b> — even if you set them from your phone. KAEL also picks them up from chat: just say <i>“remind me at 5pm to email my prof”</i>. Reminders missed while KAEL was off are skipped with a note, not blurted late.</span>
+      </div>
+
+      <div class="setting-row">
+        <span class="label">Privacy <span class="tag-local" id="privacyTag">cloud allowed</span></span>
+        <div class="row" style="flex-wrap:wrap; gap:10px 16px;">
+          <label class="chk"><input type="checkbox" id="localOnlyToggle"> Local-only mode — nothing leaves this machine</label>
+        </div>
+        <div class="row" style="margin-top:8px; flex-wrap:wrap; gap:10px;">
+          <button class="mini-btn" id="exportMemoryBtn">⬇ Export my data</button>
+          <button class="mini-btn danger" id="panicBtn">⛔ PANIC — stop all watching</button>
+        </div>
+        <span class="hint">Exactly four things can ever leave this machine, each only when YOU enable it: <b>Claude</b> chat (the header toggle), <b>OpenAI voice</b> (premium TTS), <b>web search</b> (your query text), and the <b>gpt-oss cloud</b> proactive brain (activity text lines, never images). <b>Local-only mode</b> blocks all four at the server — KAEL then runs entirely on this PC, offline-capable. <b>Export</b> downloads everything KAEL knows (memory, tasks, reminders, activity notes, nudges) as one JSON file. <b>PANIC</b> instantly stops screen + webcam watching everywhere, turns off the proactive voice, and flips local-only ON — nothing is deleted; re-enable things when you're ready.</span>
       </div>
 
       <div class="setting-row">
@@ -2251,8 +2285,10 @@
         else { tempRange.value = String(cfg.temperature); tempVal.textContent = String(cfg.temperature); }
         personaInput.value = cfg.persona != null ? cfg.persona : (cfg.defaultPersona || '');
         personaInput.dataset.def = cfg.defaultPersona || '';
+        setLocalOnlyUI(cfg.localOnly === true);
       } catch { /* server not ready / old build — leave controls as-is */ }
       loadMemoryBox();
+      loadProfilesPanel();
       loadAwarenessPanel();
       loadCoachPanel();
       loadTasksPanel();
@@ -2260,6 +2296,72 @@
       loadPermissionsPanel();
       loadDevicesPanel();
     }
+
+    // ---- Brain profiles (which model answers which kind of work) ----
+    const chatProfileSelect = document.getElementById('chatProfileSelect');
+    const profileList = document.getElementById('profileList');
+    const profileTag = document.getElementById('profileTag');
+    async function loadProfilesPanel() {
+      try {
+        const d = await fetch('/api/profiles').then((r) => r.json());
+        if (d.chatProfile) { chatProfileSelect.value = d.chatProfile; profileTag.textContent = d.chatProfile; }
+        profileList.innerHTML = '';
+        for (const [name, p] of Object.entries(d.profiles || {})) {
+          const item = document.createElement('div'); item.className = 'aware-log-item';
+          const t = document.createElement('span'); t.className = 't'; t.textContent = name;
+          item.appendChild(t);
+          if (p.fellBack) {
+            item.append(p.resolved + ' (fallback — pull ' + (p.candidates && p.candidates[0] || 'a model') + ' for this tier)');
+          } else {
+            item.append(p.resolved || '—');
+          }
+          profileList.appendChild(item);
+        }
+        (d.recentRoutes || []).slice(0, 3).forEach((r) => {
+          const item = document.createElement('div'); item.className = 'aware-log-item';
+          const t = document.createElement('span'); t.className = 't'; t.textContent = 'answered';
+          item.appendChild(t); item.append(r.model + ' (' + r.wanted + ')');
+          profileList.appendChild(item);
+        });
+      } catch { /* old server without profiles — leave idle */ }
+    }
+    chatProfileSelect.addEventListener('change', async () => {
+      const r = await fetch('/api/profiles', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatProfile: chatProfileSelect.value }),
+      }).catch(() => null);
+      if (r && r.ok) { profileTag.textContent = chatProfileSelect.value; flashBrainNote('chat brain → ' + chatProfileSelect.value); }
+      else { flashBrainNote('could not switch profile'); loadProfilesPanel(); }
+    });
+
+    // ---- Privacy: local-only mode, export, panic ----
+    const localOnlyToggle = document.getElementById('localOnlyToggle');
+    const privacyTag = document.getElementById('privacyTag');
+    function setLocalOnlyUI(on) {
+      localOnlyToggle.checked = on;
+      privacyTag.textContent = on ? 'LOCAL-ONLY' : 'cloud allowed';
+      privacyTag.classList.toggle('on', on);
+    }
+    localOnlyToggle.addEventListener('change', async () => {
+      const on = localOnlyToggle.checked;
+      const r = await postConfig({ localOnly: on }).catch(() => null);
+      if (r && r.ok) { setLocalOnlyUI(on); flashBrainNote(on ? 'local-only — nothing leaves this machine' : 'cloud features allowed again'); }
+      else { setLocalOnlyUI(!on); flashBrainNote('could not change local-only mode'); }
+    });
+    document.getElementById('exportMemoryBtn').addEventListener('click', () => {
+      const a = document.createElement('a');
+      a.href = '/api/memory/export'; a.download = '';
+      document.body.appendChild(a); a.click(); a.remove();
+      flashBrainNote('exporting everything KAEL knows…');
+    });
+    document.getElementById('panicBtn').addEventListener('click', async () => {
+      if (!confirm('PANIC: stop screen + webcam watching everywhere, silence the proactive voice, and switch to local-only mode?\n\nNothing is deleted — you re-enable things when ready.')) return;
+      try { Awareness.stop(); } catch {}
+      await fetch('/api/panic', { method: 'POST' }).catch(() => {});
+      setLocalOnlyUI(true);
+      loadSettingsPanel();
+      flashBrainNote('PANIC — all watching stopped, local-only ON');
+    });
     async function loadMemoryBox() {
       let mem;
       try { mem = await fetch('/api/memory').then((r) => r.json()); }
@@ -2273,7 +2375,17 @@
         const facts = document.createElement('div'); facts.className = 'memory-facts';
         profile.forEach((f, i) => {
           const row = document.createElement('div'); row.className = 'memory-fact';
-          const span = document.createElement('span'); span.textContent = f;
+          const span = document.createElement('span');
+          // v2 facts are objects with metadata; old servers still send strings
+          const text = (f && typeof f === 'object') ? (f.text || '') : f;
+          span.textContent = text;
+          if (f && typeof f === 'object' && f.category && f.category !== 'other') {
+            const chip = document.createElement('span');
+            chip.textContent = f.category;
+            chip.style.cssText = 'margin-left:6px;padding:1px 6px;border-radius:8px;font-size:.62rem;letter-spacing:.04em;color:var(--accent);border:1px solid var(--border);opacity:.8;vertical-align:middle;';
+            chip.title = 'learned ' + (f.addedAt || '?') + ' · last confirmed ' + (f.lastConfirmed || '?') + ' · from ' + (f.source || '?');
+            span.appendChild(chip);
+          }
           const del = document.createElement('button'); del.className = 'memory-del'; del.textContent = '✕'; del.title = 'Forget this';
           del.addEventListener('click', async () => {
             const remaining = profile.filter((_, j) => j !== i);
@@ -2525,13 +2637,17 @@
             if (d && d.note) {
               if (this.fails >= 2) setAwareBadge('on');   // recovered — stop saying "stalled"
               this.fails = 0; this.lastNote = d.note;
-              setAwareStatus(d.note, 'seen ' + fmtTime(d.at) + (d.mood ? ' · ' + d.mood : ''), d.note);
+              const stamp = 'seen ' + fmtTime(d.at) + (d.mood ? ' · ' + d.mood : '')
+                + (d.confidence && d.confidence !== 'high' ? ' · ' + (d.confidence === 'low' ? 'unsure' : 'fairly sure') : '');
+              setAwareStatus(d.note, stamp, d.note);
               this.firstGlance = false; loadAwarenessLog();
             } else if (d && d.skipped) {
               // busy / throttled / chat in progress — neutral, don't sit on "looking…"
               if (this.lastNote) setAwareStatus(this.lastNote, 'glance skipped (' + d.skipped + ')', this.lastNote);
             }
-            if (d && d.coach) speakCoachNudge(d.coach);   // proactive nudge rides along on the glance
+            // proactive nudge rides along on the glance ({text, reason} now; a
+            // plain string from an older server still works)
+            if (d && d.coach) speakCoachNudge(d.coach.text || d.coach, d.coach.reason);
           } else {
             const e = await r.json().catch(() => ({}));
             this.fail(e.error || ('glance failed (' + r.status + ')'));
@@ -2565,6 +2681,12 @@
           const item = document.createElement('div'); item.className = 'aware-log-item';
           const t = document.createElement('span'); t.className = 't'; t.textContent = fmtTime(Date.parse(n.at));
           item.appendChild(t); item.append(n.note);
+          if (n.confidence === 'low') {
+            const c = document.createElement('span');
+            c.textContent = ' · unsure';
+            c.style.cssText = 'color:var(--muted);opacity:.7;font-style:italic;';
+            item.appendChild(c);
+          }
           if (n.mood) {
             const m = document.createElement('span');
             m.textContent = ' · ' + n.mood;
@@ -2631,20 +2753,72 @@
       coachTag.classList.toggle('on', on);
     }
     // Speak a proactive nudge (and show it), but never interrupt a real conversation turn.
-    function speakCoachNudge(text) {
+    // `reason` (why KAEL spoke) is screen-only — shown small under the bubble with
+    // snooze / off-base controls, never spoken aloud.
+    function speakCoachNudge(text, reason) {
       if (!text || state === 'thinking' || state === 'speaking' || pttActive) return;
       lastNudgeText = text; lastNudgeAt = Date.now();   // dedupe vs. the event-bus copy
       const b = addMessage('kael', 'KAEL', text);
       finalizeBubble(b);
+      attachNudgeMeta(b, text, reason);
       stopSpeaking();
       muteMicForSpeech();   // open-mic must not transcribe KAEL's own nudge
       streamDone = true;
       speakSentence(text);
       if (voiceMuted) backToReady();
     }
+    // Why-this-nudge line + controls under a nudge bubble. Best-effort cosmetic —
+    // wrapped so a DOM hiccup can never break the spoken nudge itself.
+    function attachNudgeMeta(bubble, text, reason) {
+      try {
+        if (!bubble || !bubble.appendChild) return;
+        const meta = document.createElement('div');
+        meta.style.cssText = 'margin-top:6px;font-size:.7rem;color:var(--muted);display:flex;gap:10px;align-items:center;flex-wrap:wrap;';
+        if (reason) {
+          const why = document.createElement('span');
+          why.textContent = 'why: ' + reason;
+          meta.appendChild(why);
+        }
+        const snooze = document.createElement('button');
+        snooze.className = 'mini-btn'; snooze.textContent = '😴 1h'; snooze.title = 'Snooze proactive nudges for an hour';
+        snooze.addEventListener('click', async () => {
+          await fetch('/api/coach/snooze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ minutes: 60 }) }).catch(() => {});
+          flashBrainNote('nudges snoozed for an hour');
+        });
+        const wrong = document.createElement('button');
+        wrong.className = 'mini-btn'; wrong.textContent = '✗ off-base'; wrong.title = "This nudge misread the situation — KAEL's coach learns from it";
+        wrong.addEventListener('click', async () => {
+          await fetch('/api/coach/feedback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) }).catch(() => {});
+          wrong.disabled = true;
+          flashBrainNote('noted — the coach will factor that in');
+        });
+        meta.append(snooze, wrong);
+        bubble.appendChild(meta);
+      } catch { /* cosmetic only */ }
+    }
     function postCoach(body) {
       return fetch('/api/coach', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     }
+    // Quiet hours pickers (00–23). Populated once.
+    const quietFrom = document.getElementById('quietFrom');
+    const quietTo = document.getElementById('quietTo');
+    const snoozeState = document.getElementById('snoozeState');
+    for (let h = 0; h < 24; h++) {
+      for (const sel of [quietFrom, quietTo]) {
+        const o = document.createElement('option'); o.value = String(h); o.textContent = String(h).padStart(2, '0') + ':00';
+        sel.appendChild(o);
+      }
+    }
+    async function saveQuietHours() {
+      const f = quietFrom.value === '' ? null : Number(quietFrom.value);
+      const t = quietTo.value === '' ? null : Number(quietTo.value);
+      // both or neither — a half-set window is meaningless
+      const body = (f == null || t == null) ? { quietFrom: null, quietTo: null } : { quietFrom: f, quietTo: t };
+      await postCoach(body).catch(() => {});
+      flashBrainNote(body.quietFrom == null ? 'quiet hours cleared' : 'quiet ' + String(f).padStart(2, '0') + ':00–' + String(t).padStart(2, '0') + ':00');
+    }
+    quietFrom.addEventListener('change', saveQuietHours);
+    quietTo.addEventListener('change', saveQuietHours);
     async function loadCoachPanel() {
       try {
         const d = await fetch('/api/coach').then((r) => r.json());
@@ -2656,6 +2830,9 @@
           const o = document.createElement('option'); o.value = m; o.textContent = m; coachModel.appendChild(o);
         });
         coachModel.value = (d.models || []).find((m) => m === d.model || m.startsWith(d.model + ':')) || d.model;
+        quietFrom.value = Number.isInteger(d.quietFrom) ? String(d.quietFrom) : '';
+        quietTo.value = Number.isInteger(d.quietTo) ? String(d.quietTo) : '';
+        snoozeState.textContent = d.snoozedUntil ? ('snoozed until ' + fmtTime(Date.parse(d.snoozedUntil))) : '';
         setCoachUI(coachEnabled);
       } catch { /* old server without coaching — leave the section idle */ }
     }
@@ -3046,7 +3223,19 @@
             case 'coach.nudge':
               // the observing device already spoke this via the glance response
               if (msg.text === lastNudgeText && Date.now() - lastNudgeAt < 20000) break;
-              speakCoachNudge(msg.text);
+              speakCoachNudge(msg.text, msg.reason);
+              break;
+            case 'panic':
+              // another device hit the kill switch — drop capture HERE too
+              try { Awareness.stop(); } catch {}
+              flashBrainNote('PANIC — all watching stopped, local-only ON');
+              if (document.visibilityState === 'visible') loadSettingsPanel();
+              break;
+            case 'localonly.changed':
+              try { setLocalOnlyUI(msg.localOnly === true); } catch {}
+              break;
+            case 'coach.snoozed':
+              flashBrainNote('proactive nudges snoozed');
               break;
             case 'task.changed': if (document.visibilityState === 'visible') loadTasksPanel(); break;
             case 'schedule.changed': if (document.visibilityState === 'visible') loadSchedulesPanel(); break;

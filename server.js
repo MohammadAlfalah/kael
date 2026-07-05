@@ -64,6 +64,80 @@ const OLLAMA_KEEP_ALIVE = /^-?\d+$/.test(OLLAMA_KEEP_ALIVE_RAW)
 // Hosted Claude (the optional, paid fallback).
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 
+// ---- Model profiles (the 64GB-RAM upgrade) -----------------------------------
+// One brain per JOB instead of one brain for everything. Each profile lists its
+// candidate models best-first; KAEL uses the first one actually installed, so a
+// missing model never breaks anything — the profile just falls down its list and
+// ultimately lands on the classic chat model. The `fast` profile IS that classic
+// model (whatever the Brain picker says), so existing behavior is the baseline
+// and routing only ever *upgrades* a turn.
+// Sizing rationale for this machine (RTX 3060 6GB VRAM + 64GB DDR4-3200):
+//   ≤3B  → fully on GPU, ~80 tok/s   (fast: snappy voice replies)
+//   7-8B → mostly on GPU, ~15-30 t/s (balanced/coding: noticeably smarter)
+//   14B  → split GPU+RAM, ~5-10 t/s  (deep: only when quality beats latency)
+// The 64GB of RAM is what lets the bigger tiers load at all and stay warm in the
+// OS file cache — on the old 16GB they would have crowded out Windows itself.
+const PROFILE_KEEP_ALIVE = process.env.PROFILE_KEEP_ALIVE || '15m';
+const MODEL_PROFILES = {
+  fast:     { label: 'Fast — snappy daily voice replies',          candidates: [],                                                            ctx: 8192 },
+  balanced: { label: 'Balanced — smarter everyday reasoning (8B)', candidates: ['huihui_ai/qwen3-abliterated:8b', 'qwen3:8b', 'llama3.1:8b'], ctx: 16384 },
+  deep:     { label: 'Deep — hard reasoning & planning (14B)',     candidates: ['qwen3:14b', 'deepseek-r1:14b', 'qwen3:8b', 'huihui_ai/qwen3-abliterated:8b'], ctx: 24576 },
+  coding:   { label: 'Coding — code questions, review, debugging', candidates: ['qwen2.5-coder:7b', 'qwen2.5-coder:14b', 'qwen3:14b'],        ctx: 16384 },
+  vision:   { label: 'Vision — screen & webcam understanding',     candidates: ['qwen2.5vl:7b', 'qwen2.5vl:3b'],                              ctx: 8192 },
+};
+const CHAT_PROFILES = ['auto', 'fast', 'balanced', 'deep', 'coding'];
+// Owner overrides (Settings → Brain profiles): pin a specific installed model to
+// a profile. Persisted in config.json. `chatProfile` picks which profile answers
+// chat; 'auto' routes per message. `lastRoutes` keeps the recent routing
+// decisions so the UI can show exactly which brain answered and why.
+let profileOverrides = {};
+let chatProfile = 'auto';
+let lastRoutes = [];
+
+// Cached installed-model list for the router (a /api/tags call per turn would be
+// waste; 30s staleness is invisible — pulls take minutes anyway).
+let modelsCache = { at: 0, list: [] };
+async function installedModelsCached() {
+  if (Date.now() - modelsCache.at > 30000) {
+    modelsCache = { at: Date.now(), list: await installedModels() };
+  }
+  return modelsCache.list;
+}
+
+// Resolve a profile to a concrete installed model: owner override first, then the
+// candidate list best-first, then the classic chat model as the safety net.
+async function resolveProfile(name) {
+  const p = MODEL_PROFILES[name];
+  if (!p) return { name: 'fast', model: OLLAMA_MODEL, ctx: OLLAMA_CTX };
+  const installed = await installedModelsCached();
+  const has = (m) => installed.some((n) => n === m || n.startsWith(`${m}:`));
+  const override = profileOverrides[name];
+  if (override && has(override)) return { name, model: override, ctx: p.ctx };
+  for (const c of p.candidates) if (has(c)) return { name, model: c, ctx: p.ctx };
+  return { name: 'fast', model: OLLAMA_MODEL, ctx: OLLAMA_CTX, fellBack: name !== 'fast' };
+}
+
+// Message → profile heuristic for 'auto'. Cheap regexes, deliberately biased
+// toward FAST — voice chat lives on latency, so a turn only upshifts when the
+// message clearly benefits from a bigger brain.
+const CODE_HINT = /```|\b(code|coding|program|script|function|class|method|variable|bug|debug|debugging|error|exception|stack ?trace|compile|refactor|regex|typescript|javascript|python|java|c\+\+|c#|rust|golang|sql|html|css|json|yaml|endpoint|unit test|git|npm|node|server\.js)\b/i;
+const DEEP_HINT = /\b(think (it |this )?(through|hard|deeply)|deep dive|in depth|architecture|architect|strategy|strategic|business plan|road ?map|long[- ]term plan|pros and cons|trade[- ]?offs?|weigh (the|my) options|analy[sz]e|analysis|step[- ]by[- ]step plan|design (a|an|the)|plan out)\b/i;
+const BALANCED_HINT = /\b(explain|why (is|does|do|did|would|can)|how (does|do|did|would|can)|compare|difference between|summari[sz]e|teach me|walk me through|help me (understand|decide|think))\b/i;
+function pickChatProfile(message) {
+  if (CODE_HINT.test(message)) return 'coding';
+  if (DEEP_HINT.test(message) || message.length > 500) return 'deep';
+  if (BALANCED_HINT.test(message) || message.length > 200) return 'balanced';
+  return 'fast';
+}
+async function routeChat(message) {
+  const want = chatProfile === 'auto' ? pickChatProfile(message) : chatProfile;
+  const r = await resolveProfile(want);
+  r.wanted = want;
+  lastRoutes.push({ at: new Date().toISOString(), wanted: want, profile: r.name, model: r.model });
+  if (lastRoutes.length > 20) lastRoutes = lastRoutes.slice(-20);
+  return r;
+}
+
 // ---- Ambient awareness (optional, OFF by default) ---------------------------
 // A LOCAL vision model that periodically describes what Varyn is doing from
 // screen + webcam frames the browser sends. Fully private: frames go ONLY to the
@@ -72,7 +146,10 @@ const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 // once warm, glances in ~0.5s for almost no GPU duty; the only cost is a one-time
 // ~60s cold load when awareness first starts and ~2.2GB VRAM while it's on.
 // keep_alive holds it warm between glances; it unloads when awareness is turned off.
-const AWARENESS_MODEL_DEFAULT = process.env.AWARENESS_MODEL || 'qwen2.5vl:3b';
+// Default is the 7B — markedly better screen reading (small text, similar-looking
+// apps) and the 64GB of RAM absorbs what doesn't fit in VRAM. Boot falls back to
+// the 3B automatically if the 7B isn't pulled (see ensureVisionModel).
+const AWARENESS_MODEL_DEFAULT = process.env.AWARENESS_MODEL || 'qwen2.5vl:7b';
 const AWARENESS_KEEP_ALIVE = process.env.AWARENESS_KEEP_ALIVE || '10m';
 const AWARENESS_MIN_MS = 60000;       // never glance more than once a minute
 const AWARENESS_MAX_MS = 1800000;     // …or less than once every 30 min
@@ -101,6 +178,11 @@ let provider =
 // keep-alive loop's frequent relaunches, just like KAEL's memory.
 let sessionPersona = null;       // overrides KAEL_SYSTEM_PROMPT when set
 let sessionTemperature = null;   // overrides the local model's default sampling temp
+// LOCAL-ONLY MODE: when true, NOTHING leaves this machine — Claude is refused,
+// premium TTS is refused, web search is skipped, and any "*-cloud" Ollama model
+// (coach / extraction) is silently swapped for the local chat model. This is the
+// owner's one switch for "KAEL, talk to no one but me." Persisted in config.json.
+let localOnly = false;
 
 // Ambient-awareness state. enabled / intervalMs / model persist in config.json;
 // latestNote + latestAt are live (the most recent observation, injected into the
@@ -112,6 +194,7 @@ let awareness = {
   collectTraining: false,        // opt-in: SAVE (screenshot, caption) pairs to build a fine-tune dataset
   latestNote: '',
   latestMood: '',                // soft webcam read of how Varyn seems (may be empty)
+  latestConfidence: '',          // vision model's own rating of the note: high|medium|low|''
   latestAt: null,
 };
 let lastTrainingFile = '';       // most recent saved training image (so a correction can re-label it)
@@ -156,6 +239,10 @@ let coaching = {
   model: process.env.COACH_MODEL || 'gpt-oss:120b-cloud',
   lastNudgeAt: 0,
   lastNudge: '',
+  snoozeUntil: 0,        // "snooze 1h" from a nudge bubble — runtime only
+  quietFrom: null,       // quiet hours (local time, 0-23); null = no quiet hours
+  quietTo: null,
+  lastFeedback: '',      // last nudge the user marked as off-base — fed back to the coach
 };
 const COACH_COOLDOWN = { chill: 1200000, balanced: 600000, strict: 240000 };  // min ms between remarks (20m / 10m / ~every glance)
 
@@ -183,13 +270,16 @@ const AUTH_TOKEN_FILE = path.join(DATA_DIR, 'auth.token');        // device toke
 const SERVER_LOCK = path.join(DATA_DIR, 'server.lock');           // heartbeat for unclean-shutdown detection
 const BACKUPS_DIR = path.join(DATA_DIR, 'backups');               // daily copies of the small JSON stores
 const OS_CONTEXT_FILE = path.join(DATA_DIR, 'os-context.json');   // written by Kael Ascension OS (:3001) — read-only here
+const NUDGES_FILE = path.join(DATA_DIR, 'nudges.jsonl');          // proactive-nudge log: what KAEL said and WHY
 // KAEL always knows the current German time (Varyn's timezone). Injected into the
 // system prompt every turn so it's aware without being asked.
 const TIME_ZONE = process.env.KAEL_TIMEZONE || 'Europe/Berlin';
-const RECENT_WINDOW = 16;      // verbatim recent messages always kept in context
-const SUMMARIZE_TRIGGER = 24;  // once recent passes this, fold the oldest into the summary
-const MAX_PROFILE_FACTS = 30;  // cap on durable facts remembered about the user
-const OLLAMA_CTX = 8192;       // local-model context window (tokens) for chat + summary
+// Memory sizing — raised for the 64GB machine (more verbatim context, more
+// durable facts) and env-tunable so a smaller box can dial them back down.
+const RECENT_WINDOW = Math.max(4, Number(process.env.KAEL_RECENT_WINDOW) || 24);   // verbatim recent messages always kept in context
+const SUMMARIZE_TRIGGER = Math.max(RECENT_WINDOW + 4, Number(process.env.KAEL_SUMMARIZE_TRIGGER) || 36);  // once recent passes this, fold the oldest into the summary
+const MAX_PROFILE_FACTS = Math.max(10, Number(process.env.KAEL_MAX_FACTS) || 48);  // cap on durable facts remembered about the user
+const OLLAMA_CTX = Math.max(2048, Number(process.env.KAEL_CTX) || 8192);           // fast-profile context window (bigger profiles set their own)
 
 // The persona KAEL adopts on every turn. Injected as the system prompt.
 const KAEL_SYSTEM_PROMPT = `You are KAEL, the always-on personal AI assistant for Varyn — his JARVIS. He talks to you out loud and you reply out loud. You are a sharp, capable, general-purpose assistant: answer his questions, help him think things through, talk things over, and give real, direct help. Be a normal conversational AI first and foremost.
@@ -230,14 +320,35 @@ function getAnthropic() {
 //   • recent  — the last messages, verbatim
 // Every message is ALSO appended to transcript.jsonl (never trimmed), so the
 // full history is retained even though only a window is sent to the model.
-let memory = { version: 1, profile: [], summary: '', recent: [] };
+let memory = { version: 2, profile: [], summary: '', recent: [] };
+
+// Durable facts carry metadata now (v2): what KIND of fact it is, where it came
+// from, when it was learned, and when the conversation last confirmed it — so
+// the memory review panel can show provenance and stale facts are visible.
+// Plain strings (the v1 format) are migrated on load; every reader goes through
+// factText() so both shapes always work.
+const FACT_CATEGORIES = ['identity', 'preference', 'project', 'goal', 'habit', 'other'];
+const today = () => new Date().toISOString().slice(0, 10);
+function normalizeFact(f, source = 'conversation') {
+  const text = (typeof f === 'string' ? f : String(f?.text ?? '')).trim().slice(0, 240);
+  if (!text) return null;
+  return {
+    text,
+    category: FACT_CATEGORIES.includes(f?.category) ? f.category : 'other',
+    source: typeof f?.source === 'string' ? f.source.slice(0, 40) : source,
+    addedAt: typeof f?.addedAt === 'string' ? f.addedAt : today(),
+    lastConfirmed: typeof f?.lastConfirmed === 'string' ? f.lastConfirmed : today(),
+  };
+}
+const factText = (f) => (typeof f === 'string' ? f : (f && f.text) || '');
 
 async function loadMemory() {
   try {
     const data = JSON.parse(await readFile(MEMORY_FILE, 'utf8'));
     memory = {
-      version: 1,
-      profile: Array.isArray(data.profile) ? data.profile : [],
+      version: 2,
+      profile: (Array.isArray(data.profile) ? data.profile : [])
+        .map((f) => normalizeFact(f, 'legacy')).filter(Boolean),
       summary: typeof data.summary === 'string' ? data.summary : '',
       recent: Array.isArray(data.recent) ? data.recent : [],
     };
@@ -292,8 +403,19 @@ async function loadConfig() {
       if (typeof data.coaching.goal === 'string') coaching.goal = data.coaching.goal.slice(0, 300);
       if (['chill', 'balanced', 'strict'].includes(data.coaching.intensity)) coaching.intensity = data.coaching.intensity;
       if (typeof data.coaching.model === 'string' && data.coaching.model) coaching.model = data.coaching.model;
+      if (Number.isInteger(data.coaching.quietFrom) && data.coaching.quietFrom >= 0 && data.coaching.quietFrom <= 23) coaching.quietFrom = data.coaching.quietFrom;
+      if (Number.isInteger(data.coaching.quietTo) && data.coaching.quietTo >= 0 && data.coaching.quietTo <= 23) coaching.quietTo = data.coaching.quietTo;
     }
-    console.log(`Config loaded: model=${OLLAMA_MODEL}, persona=${sessionPersona ? 'custom' : 'default'}, temp=${sessionTemperature ?? 'default'}, awareness=${awareness.enabled ? 'on' : 'off'} (${awareness.model}), coaching=${coaching.enabled ? 'on' : 'off'}.`);
+    localOnly = data.localOnly === true;
+    if (data.profiles && typeof data.profiles === 'object') {
+      if (CHAT_PROFILES.includes(data.profiles.chatProfile)) chatProfile = data.profiles.chatProfile;
+      if (data.profiles.overrides && typeof data.profiles.overrides === 'object') {
+        for (const [k, v] of Object.entries(data.profiles.overrides)) {
+          if (MODEL_PROFILES[k] && typeof v === 'string' && v) profileOverrides[k] = v;
+        }
+      }
+    }
+    console.log(`Config loaded: model=${OLLAMA_MODEL}, persona=${sessionPersona ? 'custom' : 'default'}, temp=${sessionTemperature ?? 'default'}, awareness=${awareness.enabled ? 'on' : 'off'} (${awareness.model}), coaching=${coaching.enabled ? 'on' : 'off'}, chatProfile=${chatProfile}${localOnly ? ', LOCAL-ONLY' : ''}.`);
   } catch (err) {
     if (err.code !== 'ENOENT') console.error('Config file unreadable; using defaults.', err.message);
   }
@@ -308,7 +430,9 @@ function saveConfig() {
       temperature: sessionTemperature,
       model: OLLAMA_MODEL,
       awareness: { enabled: awareness.enabled, intervalMs: awareness.intervalMs, model: awareness.model, collectTraining: awareness.collectTraining },
-      coaching: { enabled: coaching.enabled, goal: coaching.goal, intensity: coaching.intensity, model: coaching.model },
+      coaching: { enabled: coaching.enabled, goal: coaching.goal, intensity: coaching.intensity, model: coaching.model, quietFrom: coaching.quietFrom, quietTo: coaching.quietTo },
+      localOnly,
+      profiles: { chatProfile, overrides: profileOverrides },
     }, null, 2);
   savingConfig = savingConfig
     .then(async () => {
@@ -464,8 +588,11 @@ function buildSystemPrompt() {
     const moodLine = awareness.latestMood
       ? ` From his webcam he seems ${awareness.latestMood} right now — treat that as a SOFT read, not certainty; let it gently shape your tone (be warmer and lighter if he seems low, tired, or stressed; match his energy if he's upbeat), but never announce, label, or analyze his mood unless he brings it up or it clearly matters.`
       : '';
+    const hedge = awareness.latestConfidence === 'low'
+      ? 'might be (the glance was hard to read — treat as a guess)'
+      : 'appears to be';
     sys +=
-      `\n\nRight now, from your ambient awareness of Varyn's screen and webcam, he appears to be: ` +
+      `\n\nRight now, from your ambient awareness of Varyn's screen and webcam, he ${hedge}: ` +
       `${awareness.latestNote}.${moodLine} Use this for context to be more helpful and proactive, but don't ` +
       `announce that you're watching unless he asks or it's genuinely relevant.`;
   }
@@ -473,7 +600,10 @@ function buildSystemPrompt() {
     sys +=
       `\n\nWhat you durably know about Varyn (your long-term memory — treat as true; ` +
       `don't recite it back unless it's relevant):\n` +
-      memory.profile.map((f) => `- ${f}`).join('\n');
+      memory.profile.map((f) => {
+        const cat = f && f.category && f.category !== 'other' ? `[${f.category}] ` : '';
+        return `- ${cat}${factText(f)}`;
+      }).join('\n');
   }
   if (memory.summary) {
     sys += `\n\nSummary of your earlier conversations with Varyn:\n${memory.summary}`;
@@ -515,11 +645,12 @@ async function foldIntoMemory(olderMessages) {
   const instruction =
     `You maintain KAEL's long-term memory about its user, Varyn.\n\n` +
     `Existing summary:\n"""${memory.summary || '(none yet)'}"""\n\n` +
-    `Existing known facts:\n${memory.profile.length ? memory.profile.map((f) => '- ' + f).join('\n') : '(none yet)'}\n\n` +
+    `Existing known facts:\n${memory.profile.length ? memory.profile.map((f) => '- ' + factText(f)).join('\n') : '(none yet)'}\n\n` +
     `New conversation to absorb:\n"""${convoText}"""\n\n` +
-    `Reply with ONLY a JSON object {"summary": string, "facts": string[]}. ` +
+    `Reply with ONLY a JSON object {"summary": string, "facts": [{"text": string, "category": string}]}. ` +
     `"summary": an updated, concise narrative (a few sentences) of the conversation so far, keeping important topics, decisions and context. ` +
     `"facts": the FULL updated list of durable, stable facts worth remembering forever about Varyn — his name, preferences, ongoing projects, goals, key details. ` +
+    `Each fact's "category" is one of: identity, preference, project, goal, habit, other. ` +
     `Only include what was actually stated or clearly implied; never invent. Keep each fact short.`;
 
   const res = await fetch(`${OLLAMA_URL}/api/chat`, {
@@ -543,12 +674,26 @@ async function foldIntoMemory(olderMessages) {
     memory.summary = parsed.summary.trim();
   }
   if (Array.isArray(parsed.facts)) {
-    const facts = [];
-    for (const f of parsed.facts) {
-      const t = String(f ?? '').trim();
-      if (t && !facts.some((x) => x.toLowerCase() === t.toLowerCase())) facts.push(t);
+    // The model returns the FULL updated fact list (that's the replace semantic
+    // that keeps memory self-pruning) — but metadata must survive the pass: a
+    // fact that already existed keeps its addedAt/source and gets a fresh
+    // lastConfirmed stamp instead of being reborn as new.
+    const seen = new Set();
+    const merged = [];
+    for (const raw of parsed.facts) {
+      const nf = normalizeFact(raw, 'conversation');
+      if (!nf || seen.has(nf.text.toLowerCase())) continue;
+      seen.add(nf.text.toLowerCase());
+      const prev = memory.profile.find((p) => factText(p).toLowerCase() === nf.text.toLowerCase());
+      if (prev && typeof prev === 'object') {
+        prev.lastConfirmed = today();
+        if (nf.category !== 'other') prev.category = nf.category;
+        merged.push(prev);
+      } else {
+        merged.push(nf);
+      }
     }
-    if (facts.length) memory.profile = facts.slice(0, MAX_PROFILE_FACTS);
+    if (merged.length) memory.profile = merged.slice(0, MAX_PROFILE_FACTS);
   }
 }
 
@@ -746,6 +891,27 @@ app.post('/api/permissions', (req, res) => {
   res.json({ permissions });
 });
 
+// ---- Emergency privacy kill switch --------------------------------------------
+// One red button: ALL observation stops (screen, webcam, training capture,
+// proactive voice), local-only mode comes ON, and every connected device is told
+// to drop its capture streams immediately. Nothing is deleted — the owner
+// re-enables things one by one when ready. This must never be able to fail
+// halfway: it only flips in-memory state and then persists best-effort.
+app.post('/api/panic', (_req, res) => {
+  awareness.enabled = false;
+  awareness.latestNote = ''; awareness.latestMood = ''; awareness.latestConfidence = ''; awareness.latestAt = null;
+  coaching.enabled = false;
+  localOnly = true;
+  for (const k of ['awareness', 'webcam', 'screen', 'training']) permissions[k] = false;
+  saveConfig();
+  savePermissions();
+  broadcast('panic', {});
+  broadcast('permissions.changed', { permissions });
+  broadcast('localonly.changed', { localOnly });
+  console.log('PANIC: all observation stopped, proactive voice off, local-only mode ON.');
+  res.json({ ok: true, localOnly, permissions });
+});
+
 // ---- Scheduler — reminders + routines that fire on KAEL's own clock -----------
 // One-offs ("remind me at 17:00 to email my prof") and recurring routines
 // (daily/weekly/interval). Due jobs broadcast `schedule.fired` on the event bus —
@@ -899,6 +1065,7 @@ async function runPlanStep(step, gathered) {
   switch (step.tool) {
     case 'search': {
       if (permissions.web_search === false) return 'web search is switched off in permissions';
+      if (localOnly) return 'web search is blocked by local-only mode';
       const results = await webSearch(input, AbortSignal.timeout(20000));
       const text = results?.length ? formatResults(input, results) : 'no results';
       gathered.push(`Search "${input}":\n${text}`);
@@ -906,7 +1073,7 @@ async function runPlanStep(step, gathered) {
     }
     case 'remember': {
       if (!input) return 'nothing to remember';
-      memory.profile.push(input.slice(0, 200));
+      memory.profile.push(normalizeFact(input, 'planner'));
       if (memory.profile.length > MAX_PROFILE_FACTS) memory.profile = memory.profile.slice(-MAX_PROFILE_FACTS);
       saveMemory();
       gathered.push(`Saved to memory: ${input}`);
@@ -953,6 +1120,9 @@ app.post('/api/plan', async (req, res) => {
   const runLog = { id: planId, goal, at: new Date().toISOString(), steps: [] };
   try {
     send({ type: 'status', text: 'planning…' });
+    // Planning is a reasoning job — use the balanced brain when one is installed
+    // (falls back to the classic chat model on a machine without it).
+    const planModel = (await resolveProfile('balanced').catch(() => null))?.model;
     const prompt = `You are KAEL's planner. Convert the user's goal into tool steps.
 Tools:
 - "search": look something up on the web. input = the search query.
@@ -969,7 +1139,7 @@ The user's goal: "${goal}"
 1-5 steps, only what the goal needs. Reply with STRICT JSON only (no prose, no code fence):
 {"steps":[{"tool":"...","input":"...","when":"<ISO 8601, remind only>"}]}`;
     const raw = await localChat([{ role: 'user', content: prompt }],
-      { think: false, num_predict: 700, temperature: 0.2, timeout: 45000 });
+      { model: planModel, think: false, num_predict: 700, temperature: 0.2, timeout: 60000 });
     const parsed = parseJsonLoose(raw);
     let steps = Array.isArray(parsed?.steps) ? parsed.steps.slice(0, 5) : [];
     steps = steps.filter((s) => s && ['search', 'remember', 'task', 'remind', 'answer'].includes(s.tool));
@@ -996,7 +1166,7 @@ The user's goal: "${goal}"
     const answer = await localChat([
       { role: 'system', content: buildSystemPrompt() },
       { role: 'user', content: `Goal: ${goal}\n\nWhat the plan gathered:\n${gathered.join('\n\n') || '(nothing — answer from what you know)'}\n\nGuidance: ${answerGuide}\nGive the final answer for the user. Spoken-friendly, concrete, no preamble.` },
-    ], { think: false, num_predict: 500, temperature: 0.5, timeout: 60000 });
+    ], { model: planModel, think: false, num_predict: 500, temperature: 0.5, timeout: 90000 });
     runLog.answer = answer.slice(0, 2000);
     send({ type: 'delta', text: answer });
     send({ type: 'done' });
@@ -1206,20 +1376,30 @@ function formatResults(query, results) {
 
 // FREE local model via Ollama's native streaming chat API. The response is
 // newline-delimited JSON — one object per line, e.g. {"message":{"content":"…"}}.
-async function streamFromOllama(messages, send, signal, system) {
+// `route` (from routeChat) picks the model + context size for THIS turn; without
+// one it behaves exactly as before the profile system existed.
+async function streamFromOllama(messages, send, signal, system, route) {
+  const model = route?.model || OLLAMA_MODEL;
+  const ctx = route?.ctx || OLLAMA_CTX;
+  const opts = { num_ctx: ctx };
+  if (sessionTemperature != null) opts.temperature = sessionTemperature;
   const res = await fetch(`${OLLAMA_URL}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: OLLAMA_MODEL,
+      model,
       // Ollama takes the system prompt as a leading system-role message.
       messages: [{ role: 'system', content: system }, ...messages],
       stream: true,
-      keep_alive: OLLAMA_KEEP_ALIVE,   // keep the model warm → faster next reply
-      // Roomier context so the long-term summary + recent window both fit.
-      options: sessionTemperature == null
-        ? { num_ctx: OLLAMA_CTX }
-        : { num_ctx: OLLAMA_CTX, temperature: sessionTemperature },
+      // The daily-driver model stays pinned (OLLAMA_KEEP_ALIVE, usually -1); the
+      // bigger routed brains use a shorter leash so they don't hog VRAM all day.
+      keep_alive: model === OLLAMA_MODEL ? OLLAMA_KEEP_ALIVE : PROFILE_KEEP_ALIVE,
+      // Voice-first: reasoning models (qwen3 tiers) would sit silent for their
+      // whole hidden thinking phase before the first spoken word — disable it.
+      // Even without thinking, the bigger tiers beat the 3B handily; anyone who
+      // wants full chain-of-thought quality flips the header toggle to Claude.
+      think: false,
+      options: opts,
     }),
     signal,
   });
@@ -1337,7 +1517,7 @@ app.post('/api/chat', async (req, res) => {
   // The raw search block is used for THIS call only — it is never persisted to
   // history (keeps injected snippets from lingering and keeps history small).
   let augmented = message;
-  if (permissions.web_search !== false && wantsWebSearch(message)) {
+  if (permissions.web_search !== false && !localOnly && wantsWebSearch(message)) {
     const query = extractQuery(message);
     try {
       send({ type: 'status', text: `Searching the web for "${query}"…` });
@@ -1375,11 +1555,22 @@ app.post('/api/chat', async (req, res) => {
 
   // paid_claude can be switched off AFTER the provider was already set to claude —
   // enforce it at the spend site too, falling back to the free local model.
-  const useClaude = provider === 'claude' && permissions.paid_claude !== false;
+  // local-only mode outranks the provider switch for the same reason.
+  const useClaude = provider === 'claude' && permissions.paid_claude !== false && !localOnly;
+  // Pick the brain for this turn (profile routing). Best-effort: if resolution
+  // fails (Ollama down mid-request), route stays null and the classic model is
+  // used — routing must never be able to break a turn.
+  let route = null;
+  if (!useClaude) {
+    try { route = await routeChat(message); } catch { route = null; }
+    if (route && route.model !== OLLAMA_MODEL) {
+      send({ type: 'status', text: `thinking with ${route.model} (${route.name})…` });
+    }
+  }
   try {
     const assistantText = useClaude
       ? await streamFromClaude(messages, send, controller.signal, systemPrompt)
-      : await streamFromOllama(messages, send, controller.signal, systemPrompt);
+      : await streamFromOllama(messages, send, controller.signal, systemPrompt, route);
 
     // If a newer turn interrupted us, don't commit this (partial) reply.
     if (controller.signal.aborted) throw new Error('interrupted');
@@ -1441,6 +1632,9 @@ app.post('/api/provider', (req, res) => {
   }
   if (next === 'claude' && permissions.paid_claude === false) {
     return res.status(403).json({ error: 'The paid Claude backend is switched off in KAEL\'s permissions.' });
+  }
+  if (next === 'claude' && localOnly) {
+    return res.status(403).json({ error: 'Local-only mode is on — nothing leaves this machine. Turn it off in Settings → Privacy to use Claude.' });
   }
   // Switching mid-reply is fine: the in-flight turn already picked its backend,
   // so only the NEXT turn uses the new one.
@@ -1534,17 +1728,38 @@ app.get('/api/listening', async (_req, res) => {
 });
 
 // Replace the durable profile facts (used by the memory editor to delete/keep).
+// Accepts plain strings or full fact objects — metadata rides along when given.
 app.post('/api/memory', async (req, res) => {
   const incoming = Array.isArray(req.body?.profile) ? req.body.profile : null;
-  if (!incoming) return res.status(400).json({ error: 'Expected { profile: string[] }.' });
+  if (!incoming) return res.status(400).json({ error: 'Expected { profile: [...] } (strings or fact objects).' });
   const facts = [];
   for (const f of incoming) {
-    const t = String(f ?? '').trim();
-    if (t && !facts.some((x) => x.toLowerCase() === t.toLowerCase())) facts.push(t);
+    const nf = normalizeFact(f, 'owner');
+    if (nf && !facts.some((x) => x.text.toLowerCase() === nf.text.toLowerCase())) facts.push(nf);
   }
   memory.profile = facts.slice(0, MAX_PROFILE_FACTS);
   await saveMemory();
   res.json({ profile: memory.profile });
+});
+
+// One-click export of everything KAEL knows — the owner's data, in the owner's
+// hands, as a single JSON download. (The full transcript is deliberately not
+// inlined — it can be huge; it lives verbatim in data/transcript.jsonl.)
+app.get('/api/memory/export', async (_req, res) => {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    note: 'Full raw transcript is in data/transcript.jsonl; screen-glance log in data/awareness.jsonl.',
+    memory,
+    learned,
+    tasks,
+    schedules: schedules.schedules,
+    permissions,
+    nudges: (await readJsonl(NUDGES_FILE).catch(() => [])).slice(-200),
+    awarenessNotes: (await readJsonl(AWARENESS_FILE).catch(() => [])).slice(-500),
+  };
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="kael-export-${today()}.json"`);
+  res.send(JSON.stringify(payload, null, 2));
 });
 
 // ---- Owner config: persona, temperature, local model ------------------------
@@ -1565,6 +1780,7 @@ app.get('/api/config', async (_req, res) => {
     model: OLLAMA_MODEL,
     models: await installedModels(),
     provider,
+    localOnly,
   });
 });
 
@@ -1600,8 +1816,71 @@ app.post('/api/config', async (req, res) => {
     // is streaming makes Ollama swap models on the GPU and stalls the live answer.
     if (!activeController) warmUpModel();
   }
+  if ('localOnly' in b) {
+    localOnly = b.localOnly === true;
+    changed = true;
+    if (localOnly && provider === 'claude') { provider = 'ollama'; broadcast('provider.changed', { provider }); }
+    broadcast('localonly.changed', { localOnly });
+  }
   if (changed) saveConfig();   // persist so the choice survives the next relaunch
-  res.json({ persona: sessionPersona, temperature: sessionTemperature, model: OLLAMA_MODEL });
+  res.json({ persona: sessionPersona, temperature: sessionTemperature, model: OLLAMA_MODEL, localOnly });
+});
+
+// ---- Model profiles: which brain answers which kind of work -------------------
+// GET reports every profile with what it would actually resolve to RIGHT NOW
+// (given what's installed) plus the recent routing decisions — full transparency
+// about which model answered. POST switches the chat profile ('auto' routes per
+// message) or pins/unpins a specific installed model onto a profile.
+app.get('/api/profiles', async (_req, res) => {
+  const installed = await installedModels();
+  modelsCache = { at: Date.now(), list: installed };   // freshen the router's view too
+  const has = (m) => installed.some((n) => n === m || n.startsWith(`${m}:`));
+  const out = {};
+  for (const [name, p] of Object.entries(MODEL_PROFILES)) {
+    const r = await resolveProfile(name);
+    out[name] = {
+      label: p.label,
+      ctx: p.ctx,
+      candidates: p.candidates,
+      override: profileOverrides[name] || null,
+      // the vision profile's source of truth stays the Awareness panel
+      resolved: name === 'vision' ? awareness.model : r.model,
+      fellBack: name === 'vision' ? false : r.fellBack === true,
+      missing: p.candidates.filter((c) => !has(c)),
+    };
+  }
+  res.json({ chatProfile, profiles: out, installed, recentRoutes: lastRoutes.slice(-8).reverse(), localOnly });
+});
+
+app.post('/api/profiles', async (req, res) => {
+  const b = req.body || {};
+  let changed = false;
+  if ('chatProfile' in b) {
+    if (!CHAT_PROFILES.includes(b.chatProfile)) {
+      return res.status(400).json({ error: `chatProfile must be one of: ${CHAT_PROFILES.join(', ')}.` });
+    }
+    chatProfile = b.chatProfile;
+    changed = true;
+  }
+  if ('profile' in b) {
+    const name = String(b.profile || '');
+    if (!MODEL_PROFILES[name]) return res.status(400).json({ error: 'No such profile.' });
+    if (name === 'vision') return res.status(400).json({ error: 'The vision model is picked in Settings → Awareness.' });
+    if (b.model == null || b.model === '') {
+      delete profileOverrides[name];
+      changed = true;
+    } else {
+      const m = String(b.model);
+      const models = await installedModels();
+      if (!models.some((n) => n === m || n.startsWith(`${m}:`))) {
+        return res.status(400).json({ error: `Model "${m}" is not installed. Pull it with: ollama pull ${m}` });
+      }
+      profileOverrides[name] = m;
+      changed = true;
+    }
+  }
+  if (changed) saveConfig();
+  res.json({ chatProfile, overrides: profileOverrides });
 });
 
 // ---- Ambient awareness ------------------------------------------------------
@@ -1631,8 +1910,12 @@ MOOD (a second line, OPTIONAL): If IMAGE 2 (webcam) is present AND the person's 
 MOOD: <two or three words for their apparent mood and energy>
 Read it from their face and posture — for example: focused and calm / a bit tired / frustrated / relaxed / upbeat / low energy / stressed / content. If there is no webcam, or the face is not clearly visible, or you genuinely cannot tell, OMIT the MOOD line entirely. Never guess or invent a mood you cannot actually see.
 
+CONFIDENCE (final line, REQUIRED): how sure you are of the activity sentence, in exactly this form:
+CONFIDENCE: high or medium or low
+high = you clearly read the app and content. medium = app is clear but the content is partly guessed. low = the screen is hard to read and the sentence may be wrong.
+
 {SCREEN_TEXT}{LEARNED_PROFILE}
-Treat the profile above as true about THIS user and let it override your first guess. Output now: the one activity sentence (max 22 words), then the MOOD line only if you can truly read their face.`;
+Treat the profile above as true about THIS user and let it override your first guess. Output now: the one activity sentence (max 22 words), the MOOD line only if you can truly read their face, then the CONFIDENCE line.`;
 
 // Render the learned profile (durable facts + recent corrections) for prompt injection.
 function learnedProfileText() {
@@ -1664,7 +1947,7 @@ async function describeActivity(images, screenText) {
       model: awareness.model,
       stream: false,
       keep_alive: AWARENESS_KEEP_ALIVE,
-      options: { num_predict: 110, temperature: 0.2 },
+      options: { num_predict: 128, temperature: 0.2 },
       messages: [{ role: 'user', content: prompt, images }],
     }),
     signal: AbortSignal.timeout(90000),
@@ -1672,24 +1955,34 @@ async function describeActivity(images, screenText) {
   if (!r.ok) throw new Error(`vision ${r.status}`);
   const j = await r.json();
   const raw = (j.message?.content || '').trim();
-  // The model may add a second "MOOD: ..." line — but ONLY when it can actually read the
-  // webcam face. Split it off so mood is a separate, soft signal and the note stays the
-  // clean activity line. No MOOD line (no webcam / face unclear) → mood is just empty.
-  const moodMatch = raw.match(/MOOD:\s*(.+?)\s*$/im);
+  // The model may add "MOOD: ..." and "CONFIDENCE: ..." lines. Split them off so
+  // they're separate, soft signals and the note stays the clean activity line.
+  // A missing MOOD line (no webcam / face unclear) → mood is just empty; a
+  // missing CONFIDENCE line → '' (treated as "unrated", not as low).
+  const confMatch = raw.match(/CONFIDENCE:\s*(high|medium|low)/i);
+  const confidence = confMatch ? confMatch[1].toLowerCase() : '';
+  const moodMatch = raw.match(/^\s*MOOD:\s*(.+?)\s*$/im);
   let mood = moodMatch ? moodMatch[1].trim().replace(/^["']+|["']+$/g, '').slice(0, 40) : '';
   if (/^(none|n\/?a|unknown|unclear|can'?t tell|not (clear|visible)|no (webcam|face))/i.test(mood)) mood = '';
-  const note = raw.replace(/\n?\s*MOOD:\s*.+$/im, '').trim();
-  return { note, mood };
+  const note = raw
+    .replace(/\n?\s*MOOD:\s*.+$/gim, '')
+    .replace(/\n?\s*CONFIDENCE:\s*.+$/gim, '')
+    .trim();
+  return { note, mood, confidence };
 }
 
 // ---- Proactive coaching -----------------------------------------------------
 // A non-streaming Ollama chat call, used for the coaching judgment.
 async function localChat(messages, opts = {}) {
+  let model = opts.model || OLLAMA_MODEL;
+  // local-only mode: a "*-cloud" model would ship this text off the machine —
+  // swap in the local chat model instead (weaker, but nothing leaves the box)
+  if (localOnly && isCloudModel(model)) model = OLLAMA_MODEL;
   const body = {
-    model: opts.model || OLLAMA_MODEL,
+    model,
     stream: false,
     keep_alive: OLLAMA_KEEP_ALIVE,
-    options: { num_ctx: OLLAMA_CTX, temperature: opts.temperature ?? 0.4, num_predict: opts.num_predict ?? 80 },
+    options: { num_ctx: opts.num_ctx ?? OLLAMA_CTX, temperature: opts.temperature ?? 0.4, num_predict: opts.num_predict ?? 80 },
     messages,
   };
   // reasoning models (e.g. gpt-oss) bury the answer in their chain-of-thought unless
@@ -1711,12 +2004,26 @@ const minsAgo = (iso) => Math.max(0, Math.round((Date.now() - Date.parse(iso)) /
 // thing OUT LOUD, on its own. Works with OR without a focus — with a focus it also
 // coaches toward it. Returns the remark, or null to stay quiet. A per-intensity
 // cooldown bounds how often it speaks so it's present, not spammy.
+// Quiet hours: KAEL keeps its proactive mouth shut during the owner's configured
+// window (e.g. 23 → 8). Computed in the owner's timezone. Wraps midnight.
+function inQuietHours() {
+  if (coaching.quietFrom == null || coaching.quietTo == null || coaching.quietFrom === coaching.quietTo) return false;
+  let h;
+  try { h = Number(new Intl.DateTimeFormat('en-GB', { timeZone: TIME_ZONE, hour: '2-digit', hour12: false }).format(new Date())); }
+  catch { h = new Date().getHours(); }
+  const { quietFrom: f, quietTo: t } = coaching;
+  return f < t ? (h >= f && h < t) : (h >= f || h < t);
+}
+
 async function coachCheck() {
   if (!coaching.enabled) return null;
+  if (Date.now() < coaching.snoozeUntil) return null;           // snoozed from a nudge bubble
+  if (inQuietHours()) return null;                              // owner's do-not-disturb window
   if (Date.now() - coaching.lastNudgeAt < (COACH_COOLDOWN[coaching.intensity] || COACH_COOLDOWN.balanced)) return null;
   const recent = recentNotes.slice(-10);
   if (!recent.length) return null;   // nothing observed yet
-  const timeline = recent.map((n) => `- ${minsAgo(n.at)} min ago: ${n.note}`).join('\n');
+  const timeline = recent.map((n) =>
+    `- ${minsAgo(n.at)} min ago: ${n.note}${n.confidence === 'low' ? ' (low-confidence read)' : ''}`).join('\n');
   const focusLine = coaching.goal
     ? `Their stated focus right now is: "${coaching.goal}". Hold them to it.`
     : `They have NOT set a focus — so just be good company; react to what they're actually doing.`;
@@ -1732,6 +2039,9 @@ async function coachCheck() {
   const moodNote = (awareness.latestMood && moodFresh)
     ? `\nRight now, from his webcam, he seems ${awareness.latestMood}. Factor that into whether and how you speak — if he seems tired, low, or frustrated, a kind check-in or a gentle nudge to step away fits; if he's upbeat or in good flow, match it or let him be. Don't read his mood back to him.`
     : '';
+  const feedbackLine = coaching.lastFeedback
+    ? `\nEarlier you said "${coaching.lastFeedback}" and the user marked it OFF-BASE — you misread the situation. Be more careful; don't make that kind of remark again unless the evidence is strong.`
+    : '';
   const prompt =
 `You are KAEL, the user's ever-present AI companion. You watch their day over their shoulder and speak up ON YOUR OWN, like a sharp friend in the room — NOT only when asked, and NOT only as a coach. ${focusLine}
 Their recent on-screen activity (oldest first, newest last):
@@ -1744,10 +2054,11 @@ Decide whether to say ONE short, natural thing to them out loud RIGHT NOW. Good 
 - A focus is set and they've drifted to something unrelated -> nudge them back, kind but direct.
 - They seem stuck or frustrated -> offer to help or talk it through.
 - A natural check-in feels due.
-${willingness} You are a presence, not a silent camera — but never be vapid ("still coding!"), never repeat yourself, be SPECIFIC to what you actually see, and don't break their obvious deep flow.
+${willingness} You are a presence, not a silent camera — but never be vapid ("still coding!"), never repeat yourself, be SPECIFIC to what you actually see, and don't break their obvious deep flow. Treat low-confidence reads skeptically — never nudge off one alone.
 
-Your previous remark was: "${coaching.lastNudge || '(none)'}". Never repeat it.
-Reply with EXACTLY the single word QUIET to stay silent, OR ONE warm, specific spoken sentence (max 20 words) - no preamble, no quotes, no emoji.`;
+Your previous remark was: "${coaching.lastNudge || '(none)'}". Never repeat it.${feedbackLine}
+Reply with STRICT JSON only (no prose, no code fence):
+{"speak": true or false, "reason": "<why, max 12 words — what you noticed>", "text": "<ONE warm, specific spoken sentence, max 20 words — or empty if speak is false>"}`;
   let out;
   try {
     // num_predict must be generous: reasoning models (gpt-oss) burn tokens thinking
@@ -1755,11 +2066,27 @@ Reply with EXACTLY the single word QUIET to stay silent, OR ONE warm, specific s
     out = await localChat([{ role: 'user', content: prompt }],
       { model: coaching.model, think: false, num_predict: 800, temperature: 0.4, timeout: 60000 });
   } catch { return null; }
-  const clean = out.replace(/^["'\s]+|["'\s]+$/g, '');
-  if (!clean || clean.replace(/[^A-Za-z]/g, '').toUpperCase() === 'QUIET') return null;
+  // Structured verdict; tolerate a model that ignores the JSON ask (the old
+  // QUIET-or-sentence contract) so a weaker local coach still works.
+  let text = '', reason = '';
+  const json = parseJsonLoose(out);
+  if (json && typeof json.speak === 'boolean') {
+    if (!json.speak) return null;
+    text = String(json.text || '').trim();
+    reason = String(json.reason || '').trim().slice(0, 120);
+  } else {
+    text = out.replace(/^["'\s]+|["'\s]+$/g, '');
+    if (!text || text.replace(/[^A-Za-z]/g, '').toUpperCase() === 'QUIET') return null;
+  }
+  text = text.replace(/^["']+|["']+$/g, '').slice(0, 300);
+  if (!text) return null;
   coaching.lastNudgeAt = Date.now();
-  coaching.lastNudge = clean;
-  return clean;
+  coaching.lastNudge = text;
+  // every spoken nudge is logged with its reason — inspectable, deletable data
+  appendFile(NUDGES_FILE, JSON.stringify({
+    at: new Date().toISOString(), text, reason, intensity: coaching.intensity,
+  }) + '\n', 'utf8').catch(() => {});
+  return { text, reason };
 }
 
 // Pull the loosest JSON object out of a model reply (handles ```json fences + prose).
@@ -1917,7 +2244,7 @@ app.post('/api/awareness', async (req, res) => {
   if ('collectTraining' in b) { awareness.collectTraining = b.collectTraining === true; changed = true; }
   if (changed) saveConfig();
   // turning it off forgets the current activity so KAEL stops referencing it
-  if (!awareness.enabled) { awareness.latestNote = ''; awareness.latestMood = ''; awareness.latestAt = null; }
+  if (!awareness.enabled) { awareness.latestNote = ''; awareness.latestMood = ''; awareness.latestConfidence = ''; awareness.latestAt = null; }
   res.json({ enabled: awareness.enabled, intervalMs: awareness.intervalMs, model: awareness.model, collectTraining: awareness.collectTraining });
 });
 
@@ -1945,28 +2272,29 @@ app.post('/api/awareness/observe', async (req, res) => {
   lastObserveAt = Date.now();
   try {
     const screenText = typeof req.body?.screenText === 'string' ? req.body.screenText : '';
-    let { note, mood } = await describeActivity(images, screenText);
+    let { note, mood, confidence } = await describeActivity(images, screenText);
     note = note.slice(0, 300);   // sanity length cap only — redaction is OFF (owner wants full control)
     mood = (mood || '').slice(0, 40);
     if (note) {
       awareness.latestNote = note;
       awareness.latestMood = mood;
+      awareness.latestConfidence = confidence;
       awareness.latestAt = Date.now();
-      const entry = { at: new Date().toISOString(), note, mood };
+      const entry = { at: new Date().toISOString(), note, mood, confidence };
       await appendFile(AWARENESS_FILE, JSON.stringify(entry) + '\n', 'utf8').catch(() => {});
       recentNotes.push(entry);
       if (recentNotes.length > RECENT_NOTES_MAX) recentNotes = recentNotes.slice(-RECENT_NOTES_MAX);
       if (++awarenessAppends % 500 === 0) rotateAwarenessLog();   // best-effort, detached
       // opt-in: save the (screenshot, caption) pair for the future fine-tune
       if (awareness.collectTraining && permissions.training !== false && screenB64) saveTrainingSample(screenB64, note);
-      broadcast('awareness.note', { note, mood });   // other devices see what KAEL noticed
+      broadcast('awareness.note', { note, mood, confidence });   // other devices see what KAEL noticed
     }
     // proactive presence rides along on the glance — null unless KAEL has something
     // worth saying right now (and isn't in its cooldown)
     let coach = null;
     try { coach = await coachCheck(); } catch { /* proactive voice never breaks a glance */ }
-    if (coach) broadcast('coach.nudge', { text: coach });   // spoken on every device, not just this one
-    res.json({ note, mood, at: awareness.latestAt, coach });
+    if (coach) broadcast('coach.nudge', { text: coach.text, reason: coach.reason });   // spoken on every device, not just this one
+    res.json({ note, mood, confidence, at: awareness.latestAt, coach });
   } catch (err) {
     res.status(502).json({ error: `Vision model failed: ${err.message}` });
   } finally {
@@ -1979,7 +2307,37 @@ app.get('/api/coach', async (_req, res) => {
   res.json({
     enabled: coaching.enabled, goal: coaching.goal, intensity: coaching.intensity,
     model: coaching.model, models: await installedModels(), lastNudge: coaching.lastNudge,
+    quietFrom: coaching.quietFrom, quietTo: coaching.quietTo,
+    snoozedUntil: coaching.snoozeUntil > Date.now() ? new Date(coaching.snoozeUntil).toISOString() : null,
   });
+});
+
+// Hush the proactive voice for a while without turning it off ("snooze 1h" on a
+// nudge bubble). Bounded 5 min – 24 h.
+app.post('/api/coach/snooze', (req, res) => {
+  const minutes = Math.min(Math.max(Number(req.body?.minutes) || 60, 5), 24 * 60);
+  coaching.snoozeUntil = Date.now() + minutes * 60000;
+  const until = new Date(coaching.snoozeUntil).toISOString();
+  broadcast('coach.snoozed', { until, minutes });
+  res.json({ ok: true, until, minutes });
+});
+
+// "That nudge was off-base" — logged, and fed back into the next coaching
+// judgment so the coach learns what kind of remark misses for this owner.
+app.post('/api/coach/feedback', async (req, res) => {
+  const text = String(req.body?.text ?? '').trim().slice(0, 300);
+  if (!text) return res.status(400).json({ error: 'Need the nudge text being flagged.' });
+  coaching.lastFeedback = text;
+  await appendFile(NUDGES_FILE, JSON.stringify({
+    at: new Date().toISOString(), type: 'feedback', verdict: 'wrong', text,
+  }) + '\n', 'utf8').catch(() => {});
+  res.json({ ok: true });
+});
+
+// The nudge log — every proactive remark with its reason, inspectable in the UI.
+app.get('/api/coach/nudges', async (_req, res) => {
+  try { res.json({ nudges: (await readJsonl(NUDGES_FILE)).slice(-30) }); }
+  catch { res.status(500).json({ error: 'Could not read the nudge log.' }); }
 });
 app.post('/api/coach', async (req, res) => {
   const b = req.body || {};
@@ -1991,6 +2349,14 @@ app.post('/api/coach', async (req, res) => {
     changed = true;
   }
   if ('intensity' in b && ['chill', 'balanced', 'strict'].includes(b.intensity)) { coaching.intensity = b.intensity; changed = true; }
+  // quiet hours: both ends 0-23, or null/'' to clear
+  if ('quietFrom' in b || 'quietTo' in b) {
+    const parse = (v) => (v == null || v === '' ? null : (Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= 23 ? Number(v) : undefined));
+    const f = parse(b.quietFrom), t = parse(b.quietTo);
+    if (f === undefined || t === undefined) return res.status(400).json({ error: 'Quiet hours must be whole hours 0-23 (or empty to clear).' });
+    coaching.quietFrom = f; coaching.quietTo = t;
+    changed = true;
+  }
   if ('model' in b && typeof b.model === 'string' && b.model) {
     const models = await installedModels();
     if (!models.some((n) => n === b.model || n.startsWith(`${b.model}:`))) {
@@ -2136,6 +2502,7 @@ app.post('/api/awareness/correct', async (req, res) => {
   // the mood, which belonged to the glance that just proved unreliable
   awareness.latestNote = actually;
   awareness.latestMood = '';
+  awareness.latestConfidence = 'high';   // the owner just told us the truth directly
   awareness.latestAt = Date.now();
   await saveLearned();
   // if we just saved this glance as a training sample, fix its label to the truth
@@ -2183,6 +2550,8 @@ app.get('/api/health', async (_req, res) => {
     devices: sseClients.size,                    // live event-stream connections
     scheduler: { count: schedules.schedules.length, nextAt: nextSchedule?.nextAt || null, nextText: nextSchedule?.text || null },
     exposure: { host: HOST, authRequired: HOST !== '127.0.0.1' },
+    localOnly,
+    chatProfile,
   });
 });
 
@@ -2207,6 +2576,9 @@ app.post('/api/tts', async (req, res) => {
   }
   if (permissions.paid_tts === false) {
     return res.status(403).json({ error: 'Premium voice is switched off in KAEL\'s permissions.' });
+  }
+  if (localOnly) {
+    return res.status(403).json({ error: 'Local-only mode is on — premium voice would send text to OpenAI. KAEL falls back to the free browser voice.' });
   }
   const text = (req.body?.text ?? '').toString().trim();
   if (!text) return res.status(400).json({ error: 'Text is required.' });
@@ -2277,10 +2649,28 @@ async function warmUpModel() {
   } catch { /* Ollama not ready — the first turn will load the model */ }
 }
 
+// If the configured vision model isn't installed, fall back down the vision
+// profile's candidate list instead of letting every glance 404. Best-effort —
+// with Ollama down we just keep the configured value.
+async function ensureVisionModel() {
+  try {
+    const installed = await installedModels();
+    if (!installed.length) return;   // Ollama not up yet — can't tell, leave it
+    const has = (m) => installed.some((n) => n === m || n.startsWith(`${m}:`));
+    if (has(awareness.model)) return;
+    const fallback = MODEL_PROFILES.vision.candidates.find(has);
+    if (fallback) {
+      console.log(`  vision model "${awareness.model}" not installed — using ${fallback}.`);
+      awareness.model = fallback;
+    }
+  } catch { /* leave as configured */ }
+}
+
 // Bring up persistent memory before accepting traffic, then start the server.
 await mkdir(DATA_DIR, { recursive: true }).catch(() => {});
 await loadMemory();
 await loadConfig();       // restore persona / temperature / model chosen in the Settings panel
+await ensureVisionModel();
 await loadLearned();      // restore what awareness has learned about the user
 await loadTasks();        // restore the task list
 await loadRecentNotes();  // tail of the awareness log, for the coach
