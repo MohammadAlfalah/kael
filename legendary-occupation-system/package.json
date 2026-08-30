@@ -1,0 +1,32 @@
+{
+  "name": "legendary-occupation-system",
+  "version": "0.1.0",
+  "description": "A playable system-genre life sim: the Legendary Occupation System asks you to choose a career, showers you with an absurd awakening grant, then dispatches mortals and myths to your door.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "src/engine.js",
+  "scripts": {
+    "start": "node src/cli.js",
+    "test": "node --test",
+    "build": "node scripts/build-artifact.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MohammadAlfalah/legendary-occupation-system.git"
+  },
+  "keywords": [
+    "game",
+    "simulation",
+    "system-genre",
+    "manhua",
+    "cli-game",
+    "browser-game",
+    "zero-dependencies"
+  ]
+}

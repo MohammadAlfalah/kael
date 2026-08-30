@@ -1,0 +1,4 @@
+node_modules/
+dist/
+*-save.json
+.DS_Store

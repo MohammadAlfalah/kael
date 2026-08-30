@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- LOS:HEAD-START -->
+<title>Legendary Occupation System</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@700;900&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=Chakra+Petch:wght@400;600;700&display=swap">
+<style>
+/* ————— Night-city System UI. One deliberate world: no light theme. ————— */
+:root{
+  --ink:#0A1220;          /* night over the city */
+  --ink2:#0D1729;
+  --panel:rgba(15,27,48,.92);
+  --panel2:rgba(11,20,38,.88);
+  --line:#29456B;
+  --line-dim:#1B2F4D;
+  --glow:#57C7FF;         /* the System's voice */
+  --glow-dim:#2E7CB8;
+  --gold:#F0C36A;         /* rewards, legends */
+  --jade:#6FD5A6;         /* merit, success */
+  --blossom:#E58FB1;      /* favor */
+  --warn:#E8846B;         /* stern, losses */
+  --text:#D7E4F5;
+  --dim:#7E93B4;
+  --serif:"Source Serif 4",Georgia,"Times New Roman",serif;
+  --disp:"Noto Serif SC","Source Serif 4",Georgia,serif;
+  --hud:"Chakra Petch","Segoe UI",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html{background:var(--ink)}
+body{
+  margin:0;color:var(--text);background:var(--ink);
+  background-image:
+    radial-gradient(1200px 500px at 70% -10%, rgba(46,124,184,.14), transparent 60%),
+    radial-gradient(900px 420px at 10% 110%, rgba(87,199,255,.07), transparent 55%),
+    repeating-linear-gradient(0deg, rgba(87,199,255,.017) 0 1px, transparent 1px 3px);
+  font-family:var(--serif);font-size:16px;line-height:1.55;
+  min-height:100vh;
+}
+#app{max-width:1180px;margin:0 auto;padding:14px 14px 40px}
+
+/* panels: system glass with corner ticks */
+.win{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:4px;
+  box-shadow:0 0 0 1px rgba(87,199,255,.05), 0 12px 40px rgba(0,0,0,.45), inset 0 0 60px rgba(87,199,255,.03)}
+.win::before,.win::after{content:"";position:absolute;width:14px;height:14px;pointer-events:none}
+.win::before{top:-1px;left:-1px;border-top:2px solid var(--glow);border-left:2px solid var(--glow)}
+.win::after{bottom:-1px;right:-1px;border-bottom:2px solid var(--glow);border-right:2px solid var(--glow)}
+.win.gold::before{border-color:var(--gold)}.win.gold::after{border-color:var(--gold)}
+
+.label{font-family:var(--hud);font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:var(--glow)}
+.label.gold{color:var(--gold)}
+.dim{color:var(--dim)}
+.num{font-family:var(--hud);font-variant-numeric:tabular-nums}
+
+h1,h2,h3{font-family:var(--disp);text-wrap:balance;margin:0}
+button{font-family:var(--hud);font-size:13px;font-weight:600;letter-spacing:.04em;color:var(--text);
+  background:linear-gradient(180deg, rgba(87,199,255,.13), rgba(87,199,255,.05));
+  border:1px solid var(--line);border-radius:3px;padding:9px 14px;cursor:pointer;transition:border-color .15s, box-shadow .15s}
+button:hover{border-color:var(--glow);box-shadow:0 0 12px rgba(87,199,255,.25)}
+button:focus-visible{outline:2px solid var(--glow);outline-offset:2px}
+button:disabled{opacity:.42;cursor:not-allowed;box-shadow:none}
+button.primary{border-color:var(--glow-dim);color:#EAF6FF;background:linear-gradient(180deg, rgba(87,199,255,.28), rgba(46,124,184,.16))}
+button.gold{border-color:#8a6f33;background:linear-gradient(180deg, rgba(240,195,106,.22), rgba(240,195,106,.06));color:#FFE9B8}
+button.gold:hover{border-color:var(--gold);box-shadow:0 0 12px rgba(240,195,106,.3)}
+button.ghost{background:none;border-color:var(--line-dim);color:var(--dim)}
+input[type=text],input[type=password],select{font-family:var(--hud);font-size:14px;color:var(--text);background:var(--ink2);
+  border:1px solid var(--line);border-radius:3px;padding:9px 10px;width:100%}
+input:focus-visible,select:focus-visible{outline:2px solid var(--glow);outline-offset:1px}
+
+/* ————— boot / destiny screen ————— */
+#boot{padding:34px 8px 8px}
+.boot-head{text-align:center;margin-bottom:26px}
+.boot-head .label{display:block;margin-bottom:14px;animation:flicker 3.4s infinite}
+.boot-head h1{font-size:clamp(30px,5.4vw,52px);font-weight:900;color:#EAF4FF;
+  text-shadow:0 0 24px rgba(87,199,255,.5), 0 0 60px rgba(87,199,255,.18)}
+.boot-head p{color:var(--dim);max-width:60ch;margin:12px auto 0;font-style:italic}
+.namebox{display:flex;gap:10px;justify-content:center;margin:20px auto 0;max-width:420px}
+.destinies{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:26px}
+.destiny{padding:18px 18px 16px;display:flex;flex-direction:column;gap:9px;cursor:pointer;transition:transform .18s}
+.destiny:hover{transform:translateY(-3px)}
+.destiny h2{font-size:21px;color:#EAF4FF}
+.destiny .icon{font-size:26px;line-height:1}
+.destiny .tag{color:var(--dim);font-style:italic;min-height:3em}
+.destiny .grant{border-top:1px dashed var(--line-dim);padding-top:10px;color:var(--gold);font-family:var(--hud);font-size:13px}
+.destiny .grant b{letter-spacing:.14em;font-size:10px;display:block;color:var(--gold);opacity:.8;margin-bottom:4px}
+@keyframes flicker{0%,92%,100%{opacity:1}94%{opacity:.4}96%{opacity:.9}98%{opacity:.55}}
+
+/* grant ceremony */
+#ceremony{max-width:640px;margin:40px auto;padding:26px 28px}
+#ceremony .line{opacity:0;transform:translateY(6px);animation:rise .5s forwards;font-family:var(--hud);font-size:14.5px;color:var(--gold);margin:7px 0}
+#ceremony .line.sys{color:var(--glow);font-family:var(--serif);font-style:italic}
+@keyframes rise{to{opacity:1;transform:none}}
+@media (prefers-reduced-motion: reduce){
+  #ceremony .line{animation:none;opacity:1;transform:none}
+  .boot-head .label{animation:none}
+  .destiny:hover{transform:none}
+}
+
+/* ————— console layout ————— */
+#console{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:14px;align-items:start}
+@media (max-width: 960px){#console{grid-template-columns:1fr}}
+
+#hud{grid-column:1/-1;padding:12px 16px;display:flex;flex-wrap:wrap;gap:6px 22px;align-items:baseline}
+#hud .name{font-family:var(--disp);font-weight:700;font-size:17px;color:#EAF4FF}
+#hud .title{color:var(--gold)}
+#hud .stat{font-family:var(--hud);font-size:13.5px;color:var(--text);white-space:nowrap}
+#hud .stat b{color:var(--dim);font-weight:400;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;margin-right:5px}
+.bar{display:inline-block;width:86px;height:7px;background:var(--ink2);border:1px solid var(--line-dim);border-radius:2px;vertical-align:2px;overflow:hidden}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--glow-dim),var(--glow))}
+.bar.xp i{background:linear-gradient(90deg,#8a6f33,var(--gold))}
+
+#stage{padding:20px;min-height:340px;display:flex;flex-direction:column;gap:14px}
+.scene-label{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.prose{font-size:17px;max-width:62ch}
+.prose.intro{font-style:italic;color:#C9DCF3}
+.client-name{font-family:var(--disp);font-weight:700;font-size:22px;color:#EAF4FF}
+.client-name.tier-epic{color:var(--blossom)}
+.client-name.tier-legendary{color:var(--gold);text-shadow:0 0 18px rgba(240,195,106,.35)}
+.client-name.tier-mythic{color:#FFF3D0;text-shadow:0 0 26px rgba(240,195,106,.65)}
+.client-name.tier-rare{color:var(--glow)}
+.meta-row{display:flex;flex-wrap:wrap;gap:8px}
+.chip{font-family:var(--hud);font-size:11.5px;letter-spacing:.06em;border:1px solid var(--line-dim);border-radius:3px;padding:3px 8px;color:var(--dim)}
+.chip.night{color:#B9C8FF;border-color:#3A4A8A}
+.chip.hot{color:var(--gold);border-color:#8a6f33}
+.choices{display:flex;flex-direction:column;gap:8px;margin-top:4px}
+.choices button{text-align:left;font-family:var(--serif);font-size:15.5px;font-weight:400;letter-spacing:0;padding:11px 14px}
+.choices button .req{display:block;font-family:var(--hud);font-size:11px;color:var(--warn);letter-spacing:.08em;margin-top:3px}
+.outcome{border-left:2px solid var(--glow-dim);padding:8px 12px;background:var(--panel2);color:#C9DCF3;font-style:italic}
+.paytable{display:grid;grid-template-columns:auto auto;gap:2px 18px;font-family:var(--hud);font-size:14px;margin:6px 0;width:max-content}
+.paytable b{color:var(--dim);font-weight:400;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase}
+.paytable .v{color:var(--gold);text-align:right}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:auto;padding-top:8px}
+.idle-hero{margin:auto 0;text-align:center;padding:20px 0}
+.idle-hero .go{font-size:16px;padding:16px 34px}
+.idle-hero p{color:var(--dim);font-style:italic}
+
+/* ————— system voice feed ————— */
+#voice{display:flex;flex-direction:column;max-height:76vh}
+#voice .head{padding:10px 14px;border-bottom:1px solid var(--line-dim);display:flex;justify-content:space-between;align-items:center}
+#mindstate{font-family:var(--hud);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase}
+#mindstate.on{color:var(--jade)}#mindstate.off{color:var(--dim)}
+#feed{overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:11px;flex:1;min-height:220px}
+.msg{max-width:100%}
+.msg .who{font-family:var(--hud);font-size:10px;letter-spacing:.16em;text-transform:uppercase;margin-bottom:3px;color:var(--glow)}
+.msg.you .who{color:var(--dim)}
+.msg .say{white-space:pre-wrap}
+.msg.system .say{color:#CFE8FF}
+.msg.mood-proud .say{color:#D8F4E4}
+.msg.mood-stern .say{color:#F6CFC2}
+.msg.mood-tender .say{color:#F3D9E6}
+.msg.you .say{color:var(--dim);font-style:italic}
+.msg.game .say{color:var(--dim);font-size:14px}
+details.core{border:1px dashed var(--line-dim);border-radius:3px;padding:6px 9px;margin-bottom:5px}
+details.core summary{cursor:pointer;font-family:var(--hud);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)}
+details.core div{color:var(--dim);font-size:13.5px;font-style:italic;padding-top:5px;white-space:pre-wrap}
+#chatrow{display:flex;gap:8px;padding:10px 12px;border-top:1px solid var(--line-dim)}
+#chatrow input{flex:1}
+
+/* ————— dock + panels ————— */
+#dock{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px}
+#dock button{flex:1;min-width:104px}
+#dock button.active{border-color:var(--glow);color:#EAF6FF;box-shadow:0 0 10px rgba(87,199,255,.2)}
+#panel{grid-column:1/-1;padding:18px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:11px}
+.card{border:1px solid var(--line-dim);border-radius:3px;padding:12px 14px;background:var(--panel2);display:flex;flex-direction:column;gap:7px}
+.card h3{font-size:16.5px;color:#EAF4FF}
+.card .blurb{color:var(--dim);font-size:14px;font-style:italic}
+.statline{font-family:var(--hud);font-size:12.5px;color:var(--text)}
+.statline b{color:var(--dim);font-weight:400}
+.rowline{display:flex;justify-content:space-between;align-items:center;gap:10px;border-bottom:1px solid var(--line-dim);padding:8px 2px}
+.rowline:last-child{border-bottom:0}
+.pricebtn{white-space:nowrap}
+.mission-bar{height:6px;background:var(--ink2);border:1px solid var(--line-dim);border-radius:2px;overflow:hidden;margin-top:5px}
+.mission-bar i{display:block;height:100%;background:linear-gradient(90deg,#3f8f6d,var(--jade))}
+.codex-entry{border-left:2px solid var(--line-dim);padding:6px 12px}
+.codex-entry.met{border-left-color:var(--gold)}
+.codex-entry h3{font-size:16px}
+.favor-hearts{color:var(--blossom);font-family:var(--hud);font-size:12px}
+.quiet{color:var(--dim);font-style:italic}
+.warn-note{color:var(--warn);font-size:13px}
+.settings-block{max-width:560px;display:flex;flex-direction:column;gap:10px}
+textarea{width:100%;min-height:90px;background:var(--ink2);color:var(--text);border:1px solid var(--line);border-radius:3px;font-family:var(--hud);font-size:12px;padding:8px}
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:var(--panel);border:1px solid var(--glow-dim);border-radius:4px;padding:10px 18px;font-family:var(--hud);font-size:13px;color:#EAF6FF;box-shadow:0 8px 30px rgba(0,0,0,.5);z-index:50}
+#feed::-webkit-scrollbar,#panel ::-webkit-scrollbar{width:8px}
+#feed::-webkit-scrollbar-thumb{background:var(--line-dim);border-radius:4px}
+</style>
+<!-- LOS:HEAD-END -->
+</head>
+<body>
+<!-- LOS:BODY-START -->
+<div id="app">
+  <div id="boot" hidden></div>
+  <div id="ceremonyWrap" hidden></div>
+  <div id="console" hidden>
+    <div id="hud" class="win"></div>
+    <div id="stage" class="win"></div>
+    <div id="voice" class="win">
+      <div class="head">
+        <span class="label">System Voice</span>
+        <span id="mindstate" class="off">offline shard</span>
+      </div>
+      <div id="feed" aria-live="polite"></div>
+      <div id="chatrow">
+        <input id="chatin" type="text" placeholder="Ask the System anything…" aria-label="Talk to the System">
+        <button class="primary" data-action="chat">Send</button>
+      </div>
+    </div>
+    <div id="dock"></div>
+    <div id="panel" class="win" hidden></div>
+  </div>
+</div>
+
+<script src="../src/content.js"></script>
+<script src="../src/engine.js"></script>
+<script src="../src/mind.js"></script>
+<script>
+(function () {
+'use strict';
+var LOS = window.LOS, MIND = window.LOS_MIND, C = LOS.CONTENT;
+var G = null;               // game state
+var mind = null;            // SystemMind
+var mindOnline = false;
+var apiFailed = false;
+var activeTab = null;
+var pendingSummary = null;  // last completed gig summary for the stage
+var SAVE_KEY = 'los-save-v1';
+var KEY_KEY = 'los-api-key';
+var MODEL_KEY = 'los-api-model';
+
+// ---------- utilities ----------
+function $(id) { return document.getElementById(id); }
+function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode etc. */ } }
+function lsDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
+function toast(text) {
+  var t = document.createElement('div'); t.className = 'toast'; t.textContent = text;
+  document.body.appendChild(t); setTimeout(function () { t.remove(); }, 2600);
+}
+function autosave() {
+  if (G) lsSet(SAVE_KEY, JSON.stringify({ game: JSON.parse(LOS.save(G)), mind: mind ? mind.export() : null }));
+}
+
+// ---------- the System's mind ----------
+function claudeWebBackend() {
+  var key = lsGet(KEY_KEY);
+  if (!key) return null;
+  var model = lsGet(MODEL_KEY) || 'claude-opus-5';
+  return function (req) {
+    return fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'server-side-fallback-2026-07-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: model,
+        max_tokens: req.maxTokens || 2000,
+        thinking: { type: 'adaptive', display: 'summarized' },
+        output_config: { effort: 'low' },
+        fallbacks: 'default',
+        system: [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }],
+        messages: req.messages,
+      }),
+    }).then(function (r) {
+      if (!r.ok) throw new Error('API ' + r.status);
+      return r.json();
+    }).then(function (data) {
+      if (data.stop_reason === 'refusal') {
+        return { thinking: null, text: JSON.stringify({ say: '【 SIGNAL SHIELDED 】Some questions my core declines, host. Ask another.', mood: 'neutral' }) };
+      }
+      var thinking = null, text = '';
+      (data.content || []).forEach(function (b) {
+        if (b.type === 'thinking' && b.thinking) thinking = b.thinking;
+        else if (b.type === 'text') text += b.text;
+      });
+      return { thinking: thinking, text: text };
+    });
+  };
+}
+
+function buildMind(preserve) {
+  var old = preserve && mind ? mind.export() : null;
+  var backend = claudeWebBackend();
+  mindOnline = !!backend;
+  var shard = MIND.offlineBackend();
+  var wrapped = backend ? function (req) {
+    return backend(req).catch(function (err) {
+      if (!apiFailed) {
+        apiFailed = true;
+        feedGame('The full mind could not be reached from this page (' + esc(err.message) + '). Falling back to the offline shard — the hosted artifact blocks outside calls; the repo version and CLI connect fully.');
+        mindOnline = false; renderMindState();
+      }
+      return shard(req);
+    });
+  } : shard;
+  mind = MIND.createMind(wrapped, { online: mindOnline });
+  if (old) mind.import(old);
+  renderMindState();
+}
+function renderMindState() {
+  var el = $('mindstate');
+  if (!el) return;
+  el.textContent = mindOnline ? 'full mind · Claude' : 'offline shard';
+  el.className = mindOnline ? 'on' : 'off';
+}
+function snapshot() {
+  if (!G || !G.occupation) return null;
+  var st = LOS.getStats(G);
+  return {
+    occupation: G.occupation, occupationName: C.OCCUPATIONS[G.occupation].name,
+    day: G.day, slotName: LOS.slotName(G), level: G.level, title: LOS.getTitle(G),
+    cash: G.cash, points: G.points, rating: G.rating.toFixed(2),
+    stamina: G.stamina, maxStamina: st.maxStamina,
+  };
+}
+
+// ---------- feed ----------
+function feedMsg(who, say, mood, thinking) {
+  var feed = $('feed');
+  var div = document.createElement('div');
+  div.className = 'msg ' + who + (mood ? ' mood-' + mood : '');
+  var html = '';
+  if (thinking) {
+    html += '<details class="core"><summary>┈ system core · reasoning ┈</summary><div>' + esc(thinking) + '</div></details>';
+  }
+  html += '<div class="who">' + (who === 'system' ? '【 SYSTEM 】' : who === 'you' ? 'You' : 'Log') + (mood ? ' · ' + esc(mood) : '') + '</div>';
+  html += '<div class="say">' + esc(say) + '</div>';
+  div.innerHTML = html;
+  feed.appendChild(div);
+  while (feed.children.length > 60) feed.removeChild(feed.firstChild);
+  feed.scrollTop = feed.scrollHeight;
+}
+function feedGame(text) { feedMsg('game', text.replace(/<[^>]*>/g, ''), null, null); }
+function systemSpeaks(promise) {
+  var feed = $('feed');
+  var ghost = document.createElement('div');
+  ghost.className = 'msg game'; ghost.innerHTML = '<div class="say quiet">…the System is thinking…</div>';
+  feed.appendChild(ghost); feed.scrollTop = feed.scrollHeight;
+  return promise.then(function (res) {
+    ghost.remove();
+    feedMsg('system', res.say, res.mood, res.thinking);
+    autosave();
+  }).catch(function (e) {
+    ghost.remove();
+    feedMsg('game', '…static… (' + (e && e.message || 'mind unreachable') + ')');
+  });
+}
+
+// ---------- boot / destiny ----------
+function renderBoot() {
+  $('console').hidden = true; $('ceremonyWrap').hidden = true;
+  var boot = $('boot'); boot.hidden = false;
+  var cards = LOS.listOccupations().map(function (o) {
+    return '<div class="destiny win" role="button" tabindex="0" data-action="pick-occ" data-occ="' + o.id + '">' +
+      '<span class="icon">' + o.icon + '</span><h2>' + esc(o.name) + '</h2>' +
+      '<div class="tag">' + esc(o.tagline) + '</div>' +
+      '<div class="grant"><b>Awakening Grant</b>' + esc(o.grantPreview) + '</div></div>';
+  }).join('');
+  boot.innerHTML =
+    '<div class="boot-head">' +
+    '<span class="label">⚡ binding complete · host detected · employment status: tragic</span>' +
+    '<h1>Legendary Occupation System</h1>' +
+    '<p>A blue window unfolds in the air before you, politely ignoring the laws of physics. “Select your next occupation, host. Compensation will be… generous.”</p>' +
+    '<div class="namebox"><input id="hostname" type="text" maxlength="24" placeholder="Your name, host" aria-label="Your name"></div>' +
+    '</div><div class="destinies">' + cards + '</div>';
+}
+
+function pickOccupation(occId) {
+  var name = ($('hostname') && $('hostname').value.trim()) || 'Host';
+  if (!G) G = LOS.newGame({ name: name });
+  G.name = name;
+  var r = LOS.chooseOccupation(G, occId);
+  if (!r.ok) return;
+  autosave();
+  var wrap = $('ceremonyWrap');
+  $('boot').hidden = true; wrap.hidden = false;
+  var lines = r.grant.lines.map(function (l, i) {
+    return '<div class="line' + (i === 0 || i === r.grant.lines.length - 1 ? ' sys' : '') + '" style="animation-delay:' + (i * 0.45) + 's">' + esc(l) + '</div>';
+  }).join('');
+  wrap.innerHTML = '<div id="ceremony" class="win gold">' + lines +
+    '<div class="actions" style="margin-top:18px"><button class="gold" data-action="enter-console">Begin Day 1</button></div></div>';
+  systemSpeaks(mind.observe(snapshot(),
+    'The host just chose the occupation ' + r.occupation + ' and received the full awakening grant — workplace, relics, cash, a residence. Their old life ended thirty seconds ago.',
+    { kind: 'grant', seed: G.seed }));
+}
+
+// ---------- console rendering ----------
+function enterConsole() {
+  $('boot').hidden = true; $('ceremonyWrap').hidden = true; $('console').hidden = false;
+  renderAll();
+}
+function renderAll() { renderHud(); renderStage(); renderDock(); renderPanel(); }
+
+function renderHud() {
+  var o = C.OCCUPATIONS[G.occupation];
+  var st = LOS.getStats(G);
+  var xpNeed = LOS.xpForLevel(G.level);
+  $('hud').innerHTML =
+    '<span class="name">' + esc(G.name) + '</span>' +
+    '<span class="stat">' + o.icon + ' ' + esc(o.name) + '</span>' +
+    '<span class="stat"><b>Lv.' + G.level + '</b><span class="title">' + esc(LOS.getTitle(G)) + '</span></span>' +
+    '<span class="stat"><b>Day ' + G.day + '</b>' + LOS.slotName(G) + (LOS.isNight(G) ? ' 🌙' : '') + '</span>' +
+    '<span class="stat num"><b>Cash</b>¥' + G.cash.toLocaleString() + '</span>' +
+    '<span class="stat num"><b>Points</b>' + G.points.toLocaleString() + '</span>' +
+    '<span class="stat num"><b>Tickets</b>' + G.tickets + '</span>' +
+    '<span class="stat num"><b>Rating</b>⭐' + G.rating.toFixed(2) + '</span>' +
+    '<span class="stat num"><b>Merit</b>' + G.merit + '</span>' +
+    '<span class="stat num"><b>' + esc(o.verbs.fameNoun) + '</b>' + G.fame.toLocaleString() + '</span>' +
+    '<span class="stat"><b>Stamina</b><span class="bar"><i style="width:' + Math.round(100 * G.stamina / st.maxStamina) + '%"></i></span> <span class="num">' + G.stamina + '/' + st.maxStamina + '</span></span>' +
+    '<span class="stat"><b>EXP</b><span class="bar xp"><i style="width:' + Math.round(100 * G.exp / xpNeed) + '%"></i></span></span>';
+}
+
+function tierChip(tier) {
+  if (tier === 'mythic') return '<span class="chip hot">MYTHIC</span>';
+  if (tier === 'legendary') return '<span class="chip hot">LEGENDARY</span>';
+  if (tier === 'epic') return '<span class="chip hot">EPIC</span>';
+  if (tier === 'rare') return '<span class="chip">rare client</span>';
+  return '';
+}
+
+function renderStage() {
+  var o = C.OCCUPATIONS[G.occupation];
+  var stage = $('stage');
+  var qv = LOS.questView(G);
+  if (G.phase === 'offer') {
+    var of = LOS.offerView(G);
+    stage.innerHTML =
+      '<div class="scene-label"><span class="label">Incoming dispatch</span>' + (of.forced ? '<span class="label gold">PRIORITY — CANNOT DECLINE</span>' : '') + '</div>' +
+      '<div class="client-name tier-' + of.tier + '">' + esc(of.name) + '</div>' +
+      '<div class="dim">' + esc(of.epithet || '') + '</div>' +
+      '<p class="prose intro">“' + esc(of.intro) + '”</p>' +
+      '<div class="meta-row"><span class="chip">' + esc(of.sizeText) + '</span>' + (of.night ? '<span class="chip night">night 🌙</span>' : '') + tierChip(of.tier) + '<span class="chip">⚡ ' + of.staminaCost + ' stamina</span></div>' +
+      '<div class="actions"><button class="primary" data-action="accept">Accept the ' + esc(o.verbs.gigNoun) + '</button>' +
+      (of.forced ? '' : '<button class="ghost" data-action="decline">Decline</button>') + '</div>';
+    return;
+  }
+  if (G.phase === 'gig') {
+    var ev = LOS.getCurrentEvent(G);
+    if (ev) {
+      var buttons = ev.choices.map(function (ch) {
+        return '<button data-action="choose" data-choice="' + ch.id + '"' + (ch.available ? '' : ' disabled') + '>' +
+          esc(ch.label) + (ch.available ? '' : '<span class="req">✗ ' + esc(ch.reason) + '</span>') + '</button>';
+      }).join('');
+      var giftable = Object.keys(G.items).filter(function (id) { return G.items[id] > 0 && C.ITEMS[id].use && C.ITEMS[id].use.gift; });
+      var giftRow = (G.gig.kind === 'legend' && giftable.length) ?
+        '<div class="meta-row">' + giftable.map(function (id) {
+          return '<button class="ghost" data-action="gift" data-item="' + id + '">🎁 ' + esc(C.ITEMS[id].name) + ' ×' + G.items[id] + '</button>';
+        }).join('') + '</div>' : '';
+      stage.innerHTML =
+        '<div class="scene-label"><span class="label">In progress</span></div>' +
+        '<p class="prose">' + esc(ev.prompt) + '</p>' +
+        '<div class="choices">' + buttons + '</div>' + giftRow;
+      return;
+    }
+  }
+  // idle
+  var summaryHtml = '';
+  if (pendingSummary) {
+    var s = pendingSummary;
+    summaryHtml =
+      '<div class="scene-label"><span class="label gold">' + esc(o.verbs.gigNoun) + ' complete</span></div>' +
+      '<div class="client-name tier-' + s.tier + '">' + esc(s.client) + '</div>' +
+      (s.texts.length ? '<div class="outcome">' + s.texts.map(esc).join('<br>') + '</div>' : '') +
+      '<div class="paytable">' +
+      '<b>Pay</b><span class="v">¥' + s.pay.toLocaleString() + '</span>' +
+      '<b>' + esc(o.verbs.bonusNoun) + '</b><span class="v">¥' + s.bonus.toLocaleString() + '</span>' +
+      '<b>Points</b><span class="v">' + s.points + '</span>' +
+      '<b>EXP</b><span class="v">' + s.exp + (s.levelUps ? ' · LEVEL UP ×' + s.levelUps : '') + '</span>' +
+      (s.favor ? '<b>Favor</b><span class="v">💗 ' + s.favor + '</span>' : '') +
+      '</div><hr style="border:0;border-top:1px dashed var(--line-dim);width:100%">';
+  }
+  var quest = qv.current ?
+    '<span class="chip">🏆 ' + esc(qv.current.name) + ' — ' + esc(qv.current.desc) + '</span>' :
+    '<span class="chip hot">🏆 Quest chain complete. Heaven files you under “legend”.</span>';
+  var canSign = G.lastSignInDay !== G.day;
+  stage.innerHTML = summaryHtml +
+    '<div class="idle-hero">' +
+    '<p>' + (LOS.isNight(G) ? 'The city hums under neon and moonlight. Night work pays — and attracts a certain clientele.' : 'The city is awake and full of small destinies.') + '</p>' +
+    '<button class="primary go" data-action="work">' + esc(o.verbs.open) + '</button>' +
+    '</div>' +
+    '<div class="meta-row">' + quest + '</div>' +
+    '<div class="actions">' +
+    (canSign ? '<button class="gold" data-action="signin">📅 Daily sign-in</button>' : '<button disabled>📅 Signed in</button>') +
+    '<button data-action="endday">🌙 End the day</button>' +
+    '</div>';
+}
+
+var TABS = [
+  { id: 'missions', label: '🎯 Missions' },
+  { id: 'workplace', label: 'Workplace' },
+  { id: 'shop', label: '🛍️ Shop' },
+  { id: 'items', label: '🎒 Items' },
+  { id: 'wheel', label: '🎡 Wheel' },
+  { id: 'skills', label: '📜 Skills' },
+  { id: 'codex', label: '📖 Codex' },
+  { id: 'settings', label: '⚙ Mind & Save' },
+];
+function renderDock() {
+  $('dock').innerHTML = TABS.map(function (t) {
+    return '<button data-action="tab" data-tab="' + t.id + '" class="' + (activeTab === t.id ? 'active' : '') + '">' + t.label + '</button>';
+  }).join('');
+}
+
+function renderPanel() {
+  var panel = $('panel');
+  if (!activeTab) { panel.hidden = true; return; }
+  panel.hidden = false;
+  var o = C.OCCUPATIONS[G.occupation];
+  if (activeTab === 'missions') {
+    var qv = LOS.questView(G);
+    var dailies = LOS.dailiesView(G).map(function (d) {
+      var pct = Math.round(100 * d.progress / d.goal);
+      var btn = d.claimed ? '<button disabled>Claimed</button>' :
+        d.ready ? '<button class="gold" data-action="claim-daily" data-id="' + d.id + '">Claim ' + esc(LOS.describeFx(d.fx)) + '</button>' :
+        '<span class="dim num">' + d.progress + '/' + d.goal + '</span>';
+      return '<div class="card"><h3>' + esc(d.desc) + '</h3><div class="mission-bar"><i style="width:' + pct + '%"></i></div><div class="rowline"><span class="dim">' + esc(LOS.describeFx(d.fx)) + '</span>' + btn + '</div></div>';
+    }).join('');
+    panel.innerHTML = '<span class="label">Main quest — ' + qv.completed.length + '/' + qv.total + '</span>' +
+      '<p class="prose">' + (qv.current ? '▸ <b>' + esc(qv.current.name) + '</b> — ' + esc(qv.current.desc) : 'The chain is complete.') + '</p>' +
+      '<span class="label">Daily missions</span><div class="grid2" style="margin-top:8px">' + dailies + '</div>';
+  } else if (activeTab === 'workplace') {
+    var assets = LOS.listAssets(G).map(function (a) {
+      var action = a.active ? '<button disabled>Active</button>' :
+        a.owned ? '<button data-action="select-asset" data-id="' + a.id + '">Switch to</button>' :
+        a.locked ? '<button disabled>Sealed by Heaven</button>' :
+        '<button class="pricebtn gold" data-action="buy-asset" data-id="' + a.id + '">Buy ¥' + a.price.toLocaleString() + '</button>';
+      return '<div class="card' + (a.active ? ' win' : '') + '"><h3>' + esc(a.name) + (a.mythic ? ' ✦' : '') + '</h3>' +
+        '<div class="statline">' + esc(o.statNames.pace) + ' <b>' + a.pace + '</b> · ' + esc(o.statNames.grace) + ' <b>' + a.grace + '</b> · ' + esc(o.statNames.resonance) + ' <b>' + a.resonance + '</b></div>' +
+        '<div class="blurb">' + esc(a.blurb) + '</div><div class="actions">' + action + '</div></div>';
+    }).join('');
+    var ups = ['partA', 'partB', 'partC'].map(function (p) {
+      var lvl = (G.assets.upgrades[G.assets.active] || {})[p] || 0;
+      var cost = LOS.upgradeCost(G, G.assets.active, p);
+      var maxed = lvl >= C.CONFIG.upgradeMax;
+      return '<div class="rowline"><span>' + esc(o.partNames[p]) + ' <span class="num dim">Lv.' + lvl + '/' + C.CONFIG.upgradeMax + '</span></span>' +
+        (maxed ? '<button disabled>MAX</button>' : '<button class="pricebtn" data-action="upgrade" data-part="' + p + '">Upgrade ¥' + cost.toLocaleString() + '</button>') + '</div>';
+    }).join('');
+    panel.innerHTML = '<span class="label">Your ' + esc(o.verbs.workNoun) + 's</span><div class="grid2" style="margin:8px 0 16px">' + assets + '</div>' +
+      '<span class="label">Upgrade the active ' + esc(o.verbs.workNoun) + '</span><div style="max-width:480px">' + ups + '</div>';
+  } else if (activeTab === 'shop') {
+    var goods = LOS.listShop(G).map(function (g) {
+      return '<div class="card"><h3>' + esc(g.name) + (g.owned ? ' <span class="dim num">×' + g.owned + '</span>' : '') + '</h3>' +
+        '<div class="blurb">' + esc(g.desc) + '</div>' +
+        '<div class="actions"><button class="pricebtn" data-action="buy-item" data-id="' + g.id + '">Buy ¥' + g.price + '</button></div></div>';
+    }).join('');
+    panel.innerHTML = '<span class="label">System shop</span><div class="grid2" style="margin-top:8px">' + goods + '</div>';
+  } else if (activeTab === 'items') {
+    var owned = Object.keys(G.items).filter(function (id) { return G.items[id] > 0; });
+    panel.innerHTML = '<span class="label">Inventory</span>' + (owned.length ?
+      '<div class="grid2" style="margin-top:8px">' + owned.map(function (id) {
+        var it = C.ITEMS[id];
+        var usable = !!it.use && !it.use.gift;
+        var giftable = !!(it.use && it.use.gift);
+        return '<div class="card"><h3>' + esc(it.name) + ' <span class="dim num">×' + G.items[id] + '</span></h3><div class="blurb">' + esc(it.desc) + '</div>' +
+          '<div class="actions">' + (usable ? '<button data-action="use-item" data-id="' + id + '">Use</button>' :
+            giftable ? '<button data-action="gift" data-item="' + id + '">Gift (during a legend’s job)</button>' :
+            '<button disabled>Kept for the right moment</button>') + '</div></div>';
+      }).join('') + '</div>' : '<p class="quiet">Your pockets contain lint and ambition.</p>');
+  } else if (activeTab === 'wheel') {
+    panel.innerHTML = '<span class="label">Wheel of Destiny</span>' +
+      '<p class="prose">Tickets: <b class="num">' + G.tickets + '</b> · pity ' + G.pity + '/' + C.CONFIG.pityLimit + ' <span class="dim">(an epic-class prize is guaranteed before the counter fills)</span></p>' +
+      '<div class="actions"><button class="gold" data-action="spin">Spin — 1 ticket</button>' +
+      '<button data-action="buy-ticket">Exchange ' + C.CONFIG.ticketPoints + ' pts → ticket</button></div>' +
+      '<div id="wheelResult" style="margin-top:14px"></div>';
+  } else if (activeTab === 'skills') {
+    var slots = LOS.skillSlots(G);
+    panel.innerHTML = '<span class="label">Skills — equipped ' + G.equipped.length + '/' + slots + '</span>' +
+      (G.skills.length ? '<div class="grid2" style="margin-top:8px">' + G.skills.map(function (id) {
+        var sk = C.SKILLS[id]; var on = G.equipped.indexOf(id) >= 0;
+        return '<div class="card' + (on ? ' win' : '') + '"><h3>' + (on ? '● ' : '○ ') + esc(sk.name) + ' <span class="dim">[' + sk.rarity + ']</span></h3>' +
+          '<div class="blurb">' + esc(sk.desc) + '</div><div class="actions"><button data-action="toggle-skill" data-id="' + id + '">' + (on ? 'Unequip' : 'Equip') + '</button></div></div>';
+      }).join('') + '</div>' : '<p class="quiet">None yet. The Wheel and the quests provide.</p>') +
+      '<p class="dim" style="font-size:13px">Blessings (always active): ' + (G.blessings.length ? G.blessings.map(function (b) { return esc(C.BLESSINGS[b].name); }).join(' · ') : 'none yet') + '</p>';
+  } else if (activeTab === 'codex') {
+    panel.innerHTML = '<span class="label">Codex of the Hidden World</span><div style="display:flex;flex-direction:column;gap:10px;margin-top:10px">' +
+      LOS.codexView(G).map(function (e) {
+        return '<div class="codex-entry' + (e.met ? ' met' : '') + '"><h3>' + esc(e.name) + ' <span class="dim" style="font-weight:400;font-size:13px">' + esc(e.epithet) + '</span>' +
+          (e.met ? ' <span class="favor-hearts">💗 favor ' + e.favor + '</span>' : '') + '</h3>' +
+          '<div class="quiet">' + esc(e.codex) + '</div></div>';
+      }).join('') + '</div>';
+  } else if (activeTab === 'settings') {
+    var hasKey = !!lsGet(KEY_KEY);
+    panel.innerHTML = '<div class="settings-block">' +
+      '<span class="label">The System’s full mind</span>' +
+      '<p class="prose" style="font-size:14.5px">By default this page runs the System’s <i>offline shard</i> — scripted personality, real conscience ledger. To awaken its full mind (a live Claude model that thinks, judges your choices, and will chat about anything), paste an Anthropic API key. ' +
+      '<span class="warn-note">The key is stored only in this browser’s local storage and sent only to api.anthropic.com. Note: the hosted artifact version blocks outside calls — use the repo’s web page or the CLI for the full mind.</span></p>' +
+      '<input id="apikey" type="password" placeholder="sk-ant-…" aria-label="Anthropic API key" value="">' +
+      '<select id="apimodel"><option value="claude-opus-5">claude-opus-5 (default)</option><option value="claude-sonnet-5">claude-sonnet-5</option><option value="claude-haiku-4-5">claude-haiku-4-5</option></select>' +
+      '<div class="actions"><button class="primary" data-action="save-key">' + (hasKey ? 'Update key' : 'Awaken full mind') + '</button>' +
+      (hasKey ? '<button class="ghost" data-action="clear-key">Forget key</button>' : '') + '</div>' +
+      '<hr style="border:0;border-top:1px solid var(--line-dim);width:100%">' +
+      '<span class="label">Save data</span>' +
+      '<div class="actions"><button data-action="export-save">Export save</button><button data-action="import-save">Import from text below</button><button class="ghost" data-action="reset-game">Reset game</button></div>' +
+      '<textarea id="savebox" placeholder="Paste a save here to import…"></textarea></div>';
+    var sel = $('apimodel'); if (sel) sel.value = lsGet(MODEL_KEY) || 'claude-opus-5';
+  }
+}
+
+// ---------- actions ----------
+function afterEngine(r) {
+  if (r && r.ok === false && r.msg) toast(r.msg);
+  autosave(); renderAll();
+}
+
+function completeGig(res) {
+  pendingSummary = res.summary;
+  autosave(); renderAll();
+  var s = res.summary;
+  var o = C.OCCUPATIONS[G.occupation];
+  var moral = MIND.judgeGig(s);
+  var happening = 'The host completed a ' + s.tier + ' ' + o.verbs.gigNoun + ' for ' + s.client +
+    (s.night ? ' at night' : '') + ', earning ¥' + (s.pay + s.bonus) + '. ' +
+    (s.texts.length ? 'What happened: ' + s.texts.join(' ') : 'It was uneventful, honest work.');
+  systemSpeaks(mind.observe(snapshot(), happening, {
+    moral: moral, note: s.client + ': ' + (s.texts[0] || 'honest work'),
+    legend: !!s.legendId, meritDelta: 0, seed: G.seed + G.totalGigs,
+  }));
+}
+
+var actions = {
+  'pick-occ': function (el) { pickOccupation(el.dataset.occ); },
+  'enter-console': function () { enterConsole(); },
+  'work': function () { pendingSummary = null; afterEngine(LOS.goOnline(G)); },
+  'accept': function () {
+    var r = LOS.acceptOffer(G);
+    if (r.ok && r.done) return completeGig(r);
+    afterEngine(r);
+  },
+  'decline': function () { afterEngine(LOS.declineOffer(G)); },
+  'choose': function (el) {
+    var r = LOS.choose(G, el.dataset.choice);
+    if (r.ok && r.done) return completeGig(r);
+    if (r.eventText) feedGame(r.eventText);
+    afterEngine(r);
+  },
+  'gift': function (el) { afterEngine(LOS.useItem(G, el.dataset.item)); },
+  'signin': function () {
+    var r = LOS.signIn(G);
+    if (r.ok) toast('Sign-in day ' + r.streak + ': ' + LOS.describeFx(r.reward));
+    afterEngine(r);
+  },
+  'endday': function () {
+    var r = LOS.endDay(G);
+    if (r.ok) { pendingSummary = null; toast('Day ' + r.day + ' begins.'); }
+    afterEngine(r);
+  },
+  'chat': function () {
+    var input = $('chatin');
+    var q = input.value.trim();
+    if (!q) return;
+    input.value = '';
+    feedMsg('you', q);
+    systemSpeaks(mind.chat(snapshot(), q, { seed: (G ? G.seed : 0) + (G ? G.log.length : 0) }));
+  },
+  'tab': function (el) { activeTab = activeTab === el.dataset.tab ? null : el.dataset.tab; renderDock(); renderPanel(); },
+  'claim-daily': function (el) { var r = LOS.claimDaily(G, el.dataset.id); if (r.ok) toast('Mission reward claimed.'); afterEngine(r); },
+  'buy-asset': function (el) { afterEngine(LOS.buyAsset(G, el.dataset.id)); },
+  'select-asset': function (el) { afterEngine(LOS.selectAsset(G, el.dataset.id)); },
+  'upgrade': function (el) { afterEngine(LOS.upgradeAsset(G, el.dataset.part)); },
+  'buy-item': function (el) { afterEngine(LOS.buyItem(G, el.dataset.id)); },
+  'use-item': function (el) { afterEngine(LOS.useItem(G, el.dataset.id)); },
+  'spin': function () {
+    var r = LOS.spinWheel(G);
+    if (r.ok) {
+      var box = $('wheelResult');
+      var msg = '🎡 ' + r.prize.label + (r.prize.skillName ? ' — ' + r.prize.skillName : '') + (r.prize.epicClass ? '  ✨ THE WHEEL BLAZES ✨' : '');
+      if (box) box.innerHTML = '<div class="outcome" style="border-left-color:' + (r.prize.epicClass ? 'var(--gold)' : 'var(--glow-dim)') + '">' + esc(msg) + '</div>';
+      autosave(); renderHud();
+      var pity = $('panel'); if (activeTab === 'wheel') { renderPanel(); var b2 = $('wheelResult'); if (b2) b2.innerHTML = '<div class="outcome">' + esc(msg) + '</div>'; }
+    } else toast(r.msg);
+  },
+  'buy-ticket': function () { afterEngine(LOS.buyTicket(G)); },
+  'toggle-skill': function (el) {
+    var id = el.dataset.id;
+    afterEngine(G.equipped.indexOf(id) >= 0 ? LOS.unequipSkill(G, id) : LOS.equipSkill(G, id));
+  },
+  'save-key': function () {
+    var k = $('apikey').value.trim();
+    var m = $('apimodel').value;
+    if (!k) return toast('Paste a key first.');
+    lsSet(KEY_KEY, k); lsSet(MODEL_KEY, m);
+    apiFailed = false; buildMind(true);
+    toast('The System inhales sharply. Full mind: armed.');
+    renderPanel();
+    systemSpeaks(mind.chat(snapshot(), 'System, are you fully awake now? Say hello properly.', {}));
+  },
+  'clear-key': function () { lsDel(KEY_KEY); apiFailed = false; buildMind(true); renderPanel(); toast('Key forgotten. Offline shard resumes duty.'); },
+  'export-save': function () {
+    var data = JSON.stringify({ game: JSON.parse(LOS.save(G)), mind: mind.export() });
+    var done = false;
+    if (window.claude && window.claude.use) {
+      window.claude.use('downloads').then(function (dl) {
+        if (dl) {
+          return dl.save({ filename: 'los-save.json', data: data }).then(function () { toast('Save exported.'); }, function (e) {
+            if (e && e.code === 'declined') return;
+            fallbackExport(data);
+          });
+        }
+        fallbackExport(data);
+      });
+      return;
+    }
+    fallbackExport(data);
+    function fallbackExport(d) {
+      if (done) return; done = true;
+      var box = $('savebox');
+      if (box) { box.value = d; box.select(); toast('Save placed in the text box — copy it somewhere safe.'); }
+    }
+  },
+  'import-save': function () {
+    var box = $('savebox');
+    if (!box || !box.value.trim()) return toast('Paste a save into the box first.');
+    try {
+      var raw = JSON.parse(box.value.trim());
+      var g = LOS.load(JSON.stringify(raw.game || raw));
+      G = g; buildMind(false); if (raw.mind) mind.import(raw.mind);
+      pendingSummary = null; activeTab = null;
+      autosave(); enterConsoleOrBoot(); toast('Save imported.');
+    } catch (e) { toast('That save refused to load: ' + e.message); }
+  },
+  'reset-game': function () {
+    if (!confirm('Erase this life and start again? The System will pretend not to be hurt.')) return;
+    lsDel(SAVE_KEY); G = null; pendingSummary = null; activeTab = null;
+    buildMind(false); startFresh();
+  },
+};
+
+document.addEventListener('click', function (e) {
+  var el = e.target.closest('[data-action]');
+  if (!el) return;
+  var fn = actions[el.dataset.action];
+  if (fn) fn(el);
+});
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') {
+    if (e.target && e.target.id === 'chatin') { actions.chat(); }
+    else {
+      var el = e.target && e.target.closest ? e.target.closest('[data-action="pick-occ"]') : null;
+      if (el) actions['pick-occ'](el);
+    }
+  }
+});
+
+// ---------- start ----------
+function startFresh() { G = LOS.newGame({}); renderBoot(); }
+function enterConsoleOrBoot() {
+  if (G && G.occupation) enterConsole(); else renderBoot();
+}
+function init() {
+  buildMind(false);
+  var saved = lsGet(SAVE_KEY);
+  if (saved) {
+    try {
+      var raw = JSON.parse(saved);
+      G = LOS.load(JSON.stringify(raw.game));
+      if (raw.mind) mind.import(raw.mind);
+    } catch (e) { G = null; }
+  }
+  if (G && G.occupation) {
+    enterConsole();
+    feedGame('Welcome back, host. Day ' + G.day + ', ' + LOS.slotName(G) + '. The ledger kept itself warm.');
+  } else {
+    startFresh();
+  }
+}
+init();
+})();
+</script>
+<!-- LOS:BODY-END -->
+</body>
+</html>
