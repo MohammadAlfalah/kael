@@ -102,6 +102,7 @@ test('completing a gig pays out, advances time, and grants exp/points', () => {
   const summary = playGig(s);
   assert.ok(summary.pay > 0, 'pay is positive');
   assert.ok(s.cash > cash, 'cash increased');
+  assert.ok(s.log.some(l => l.t.includes('€')), 'the ledger speaks euros');
   assert.ok(s.slot > slot, 'time advanced');
   assert.equal(s.totalGigs, 1);
   assert.ok(s.exp + s.level * 1000 > exp, 'exp gained');

@@ -63,7 +63,7 @@ function header() {
   if (o) {
     console.log(cyan('│ ') + state.name + ' — ' + o.icon + ' ' + o.name + ' · Lv.' + state.level + ' ' + gold(LOS.getTitle(state)) + '  ' + dim('EXP ' + state.exp + '/' + LOS.xpForLevel(state.level)));
     console.log(cyan('│ ') + 'Day ' + state.day + ', ' + LOS.slotName(state) + (LOS.isNight(state) ? ' 🌙' : '') +
-      ' · ' + green('¥' + state.cash) + ' · ' + mag(state.points + ' pts') + ' · 🎟️' + state.tickets +
+      ' · ' + green('€' + state.cash) + ' · ' + mag(state.points + ' pts') + ' · 🎟️' + state.tickets +
       ' · ⭐' + state.rating.toFixed(2) + ' · ⚡' + state.stamina + '/' + st.maxStamina + ' · 🧧merit ' + state.merit);
     console.log(cyan('│ ') + dim('Residence: ' + state.residence));
   }
@@ -147,12 +147,12 @@ async function runGig() {
       if (res.eventText) console.log('   ' + res.eventText);
     }
     const s = res.summary;
-    console.log('\n' + green('✅ Complete — ' + s.client) + '  ' + gold('¥' + s.pay + ' + ¥' + s.bonus + ' ' + C.OCCUPATIONS[state.occupation].verbs.bonusNoun) +
+    console.log('\n' + green('✅ Complete — ' + s.client) + '  ' + gold('€' + s.pay + ' + €' + s.bonus + ' ' + C.OCCUPATIONS[state.occupation].verbs.bonusNoun) +
       ' · ' + mag(s.points + ' pts') + ' · ' + s.exp + ' EXP' + (s.levelUps ? gold('  ⬆ LEVEL UP ×' + s.levelUps) : '') +
       (s.favor ? mag('  💗 favor ' + s.favor) : ''));
     const moral = MIND.judgeGig(s);
     const happening = 'The host completed a ' + s.tier + ' ' + C.OCCUPATIONS[state.occupation].verbs.gigNoun +
-      ' for ' + s.client + (s.night ? ' at night' : '') + ', earning ¥' + (s.pay + s.bonus) + '. ' +
+      ' for ' + s.client + (s.night ? ' at night' : '') + ', earning €' + (s.pay + s.bonus) + '. ' +
       (s.texts.length ? 'What happened: ' + s.texts.join(' ') : 'It was uneventful, honest work.');
     await systemSpeaks(mind.observe(snapshot(), happening, { moral, note: s.client + ': ' + (s.texts[0] || 'honest work'), legend: !!s.legendId, seed: state.seed + state.totalGigs }));
   }
@@ -194,15 +194,15 @@ async function workplace() {
   const assets = LOS.listAssets(state);
   console.log(bold('\n' + o.icon + ' ' + o.verbs.workNoun.toUpperCase() + 'S'));
   assets.forEach((a, i) => {
-    const tag = a.active ? green(' [ACTIVE]') : a.owned ? gold(' [OWNED]') : a.locked ? red(' [SEALED BY HEAVEN]') : dim(' ¥' + a.price);
+    const tag = a.active ? green(' [ACTIVE]') : a.owned ? gold(' [OWNED]') : a.locked ? red(' [SEALED BY HEAVEN]') : dim(' €' + a.price);
     console.log('  [' + (i + 1) + '] ' + a.name + tag + dim('  ' + o.statNames.pace + ' ' + a.pace + ' · ' + o.statNames.grace + ' ' + a.grace + ' · ' + o.statNames.resonance + ' ' + a.resonance));
     console.log('      ' + dim(a.blurb));
   });
   const act = await menu('Manage:', [
     { id: 'buy', label: 'Buy / switch (enter number next)' },
-    { id: 'upA', label: 'Upgrade ' + o.partNames.partA, note: '¥' + LOS.upgradeCost(state, state.assets.active, 'partA') },
-    { id: 'upB', label: 'Upgrade ' + o.partNames.partB, note: '¥' + LOS.upgradeCost(state, state.assets.active, 'partB') },
-    { id: 'upC', label: 'Upgrade ' + o.partNames.partC, note: '¥' + LOS.upgradeCost(state, state.assets.active, 'partC') },
+    { id: 'upA', label: 'Upgrade ' + o.partNames.partA, note: '€' + LOS.upgradeCost(state, state.assets.active, 'partA') },
+    { id: 'upB', label: 'Upgrade ' + o.partNames.partB, note: '€' + LOS.upgradeCost(state, state.assets.active, 'partB') },
+    { id: 'upC', label: 'Upgrade ' + o.partNames.partC, note: '€' + LOS.upgradeCost(state, state.assets.active, 'partC') },
     { id: 'back', key: 'b', label: 'Back' },
   ]);
   if (act === 'buy') {
@@ -220,7 +220,7 @@ async function workplace() {
 
 async function shop() {
   const goods = LOS.listShop(state);
-  const opts = goods.map(g => ({ id: g.id, label: g.name + ' — ¥' + g.price + (g.owned ? dim(' (own ' + g.owned + ')') : ''), note: g.desc }));
+  const opts = goods.map(g => ({ id: g.id, label: g.name + ' — €' + g.price + (g.owned ? dim(' (own ' + g.owned + ')') : ''), note: g.desc }));
   opts.push({ id: '_back', key: 'b', label: 'Back' });
   const pick = await menu('🛍️ System Shop:', opts);
   if (!pick || pick === '_back') return;
@@ -277,7 +277,10 @@ function saveGame() {
 async function main() {
   console.log(cyan(bold('\n【 LEGENDARY OCCUPATION SYSTEM 】')) + dim('  v0.1 — a system-genre life sim\n'));
   const claudeBackend = nodeMind.sdkAvailable() ? nodeMind.createClaudeBackend() : null;
-  mind = MIND.createMind(claudeBackend || MIND.offlineBackend(), { online: !!claudeBackend });
+  mind = MIND.createMind(claudeBackend || MIND.offlineBackend(), {
+    online: !!claudeBackend,
+    game: { state: () => state, engine: LOS }, // arms the mind's record-reading tools
+  });
   if (!claudeBackend) console.log(dim('(System mind: offline shard. `npm install` + ANTHROPIC_API_KEY awaken its full consciousness.)\n'));
 
   if (fs.existsSync(SAVE_FILE)) {

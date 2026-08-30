@@ -248,7 +248,8 @@ function claudeWebBackend() {
   var key = lsGet(KEY_KEY);
   if (!key) return null;
   var model = lsGet(MODEL_KEY) || 'claude-opus-5';
-  return function (req) {
+
+  function call(body) {
     return fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -258,29 +259,59 @@ function claudeWebBackend() {
         'anthropic-beta': 'server-side-fallback-2026-07-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
-      body: JSON.stringify({
-        model: model,
-        max_tokens: req.maxTokens || 2000,
-        thinking: { type: 'adaptive', display: 'summarized' },
-        output_config: { effort: 'low' },
-        fallbacks: 'default',
-        system: [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }],
-        messages: req.messages,
-      }),
+      body: JSON.stringify(body),
     }).then(function (r) {
       if (!r.ok) throw new Error('API ' + r.status);
       return r.json();
-    }).then(function (data) {
+    });
+  }
+
+  // Agentic loop: when the request carries tools (chat turns), the System
+  // reads the host's live records before answering. Chat thinks at high
+  // effort; quick commentary stays low for snappy banter.
+  return async function (req) {
+    var isChat = req.meta && req.meta.kind === 'chat';
+    var useTools = !!(req.tools && req.runTool);
+    var messages = req.messages.slice();
+    var thinking = null;
+    var rounds = 0;
+    while (true) {
+      var data = await call({
+        model: model,
+        max_tokens: req.maxTokens || 2000,
+        thinking: { type: 'adaptive', display: 'summarized' },
+        output_config: { effort: isChat ? 'high' : 'low' },
+        fallbacks: 'default',
+        system: [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }],
+        tools: useTools ? req.tools : undefined,
+        messages: messages,
+      });
       if (data.stop_reason === 'refusal') {
         return { thinking: null, text: JSON.stringify({ say: '【 SIGNAL SHIELDED 】Some questions my core declines, host. Ask another.', mood: 'neutral' }) };
       }
-      var thinking = null, text = '';
       (data.content || []).forEach(function (b) {
         if (b.type === 'thinking' && b.thinking) thinking = b.thinking;
-        else if (b.type === 'text') text += b.text;
       });
+      var toolUses = (data.content || []).filter(function (b) { return b.type === 'tool_use'; });
+      if (data.stop_reason === 'tool_use' && useTools && toolUses.length && rounds < 4) {
+        rounds += 1;
+        messages.push({ role: 'assistant', content: data.content });
+        messages.push({
+          role: 'user',
+          content: toolUses.map(function (b) {
+            try {
+              return { type: 'tool_result', tool_use_id: b.id, content: String(req.runTool(b.name)) };
+            } catch (e) {
+              return { type: 'tool_result', tool_use_id: b.id, content: 'record unavailable: ' + (e.message || e), is_error: true };
+            }
+          }),
+        });
+        continue;
+      }
+      var text = '';
+      (data.content || []).forEach(function (b) { if (b.type === 'text') text += b.text; });
       return { thinking: thinking, text: text };
-    });
+    }
   };
 }
 
@@ -299,7 +330,10 @@ function buildMind(preserve) {
       return shard(req);
     });
   } : shard;
-  mind = MIND.createMind(wrapped, { online: mindOnline });
+  mind = MIND.createMind(wrapped, {
+    online: mindOnline,
+    game: { state: function () { return G; }, engine: LOS }, // arms the record-reading tools
+  });
   if (old) mind.import(old);
   renderMindState();
 }
@@ -406,7 +440,7 @@ function renderHud() {
     '<span class="stat">' + o.icon + ' ' + esc(o.name) + '</span>' +
     '<span class="stat"><b>Lv.' + G.level + '</b><span class="title">' + esc(LOS.getTitle(G)) + '</span></span>' +
     '<span class="stat"><b>Day ' + G.day + '</b>' + LOS.slotName(G) + (LOS.isNight(G) ? ' 🌙' : '') + '</span>' +
-    '<span class="stat num"><b>Cash</b>¥' + G.cash.toLocaleString() + '</span>' +
+    '<span class="stat num"><b>Cash</b>€' + G.cash.toLocaleString() + '</span>' +
     '<span class="stat num"><b>Points</b>' + G.points.toLocaleString() + '</span>' +
     '<span class="stat num"><b>Tickets</b>' + G.tickets + '</span>' +
     '<span class="stat num"><b>Rating</b>⭐' + G.rating.toFixed(2) + '</span>' +
@@ -468,8 +502,8 @@ function renderStage() {
       '<div class="client-name tier-' + s.tier + '">' + esc(s.client) + '</div>' +
       (s.texts.length ? '<div class="outcome">' + s.texts.map(esc).join('<br>') + '</div>' : '') +
       '<div class="paytable">' +
-      '<b>Pay</b><span class="v">¥' + s.pay.toLocaleString() + '</span>' +
-      '<b>' + esc(o.verbs.bonusNoun) + '</b><span class="v">¥' + s.bonus.toLocaleString() + '</span>' +
+      '<b>Pay</b><span class="v">€' + s.pay.toLocaleString() + '</span>' +
+      '<b>' + esc(o.verbs.bonusNoun) + '</b><span class="v">€' + s.bonus.toLocaleString() + '</span>' +
       '<b>Points</b><span class="v">' + s.points + '</span>' +
       '<b>EXP</b><span class="v">' + s.exp + (s.levelUps ? ' · LEVEL UP ×' + s.levelUps : '') + '</span>' +
       (s.favor ? '<b>Favor</b><span class="v">💗 ' + s.favor + '</span>' : '') +
@@ -529,7 +563,7 @@ function renderPanel() {
       var action = a.active ? '<button disabled>Active</button>' :
         a.owned ? '<button data-action="select-asset" data-id="' + a.id + '">Switch to</button>' :
         a.locked ? '<button disabled>Sealed by Heaven</button>' :
-        '<button class="pricebtn gold" data-action="buy-asset" data-id="' + a.id + '">Buy ¥' + a.price.toLocaleString() + '</button>';
+        '<button class="pricebtn gold" data-action="buy-asset" data-id="' + a.id + '">Buy €' + a.price.toLocaleString() + '</button>';
       return '<div class="card' + (a.active ? ' win' : '') + '"><h3>' + esc(a.name) + (a.mythic ? ' ✦' : '') + '</h3>' +
         '<div class="statline">' + esc(o.statNames.pace) + ' <b>' + a.pace + '</b> · ' + esc(o.statNames.grace) + ' <b>' + a.grace + '</b> · ' + esc(o.statNames.resonance) + ' <b>' + a.resonance + '</b></div>' +
         '<div class="blurb">' + esc(a.blurb) + '</div><div class="actions">' + action + '</div></div>';
@@ -539,7 +573,7 @@ function renderPanel() {
       var cost = LOS.upgradeCost(G, G.assets.active, p);
       var maxed = lvl >= C.CONFIG.upgradeMax;
       return '<div class="rowline"><span>' + esc(o.partNames[p]) + ' <span class="num dim">Lv.' + lvl + '/' + C.CONFIG.upgradeMax + '</span></span>' +
-        (maxed ? '<button disabled>MAX</button>' : '<button class="pricebtn" data-action="upgrade" data-part="' + p + '">Upgrade ¥' + cost.toLocaleString() + '</button>') + '</div>';
+        (maxed ? '<button disabled>MAX</button>' : '<button class="pricebtn" data-action="upgrade" data-part="' + p + '">Upgrade €' + cost.toLocaleString() + '</button>') + '</div>';
     }).join('');
     panel.innerHTML = '<span class="label">Your ' + esc(o.verbs.workNoun) + 's</span><div class="grid2" style="margin:8px 0 16px">' + assets + '</div>' +
       '<span class="label">Upgrade the active ' + esc(o.verbs.workNoun) + '</span><div style="max-width:480px">' + ups + '</div>';
@@ -547,7 +581,7 @@ function renderPanel() {
     var goods = LOS.listShop(G).map(function (g) {
       return '<div class="card"><h3>' + esc(g.name) + (g.owned ? ' <span class="dim num">×' + g.owned + '</span>' : '') + '</h3>' +
         '<div class="blurb">' + esc(g.desc) + '</div>' +
-        '<div class="actions"><button class="pricebtn" data-action="buy-item" data-id="' + g.id + '">Buy ¥' + g.price + '</button></div></div>';
+        '<div class="actions"><button class="pricebtn" data-action="buy-item" data-id="' + g.id + '">Buy €' + g.price + '</button></div></div>';
     }).join('');
     panel.innerHTML = '<span class="label">System shop</span><div class="grid2" style="margin-top:8px">' + goods + '</div>';
   } else if (activeTab === 'items') {
@@ -588,10 +622,10 @@ function renderPanel() {
     var hasKey = !!lsGet(KEY_KEY);
     panel.innerHTML = '<div class="settings-block">' +
       '<span class="label">The System’s full mind</span>' +
-      '<p class="prose" style="font-size:14.5px">By default this page runs the System’s <i>offline shard</i> — scripted personality, real conscience ledger. To awaken its full mind (a live Claude model that thinks, judges your choices, and will chat about anything), paste an Anthropic API key. ' +
+      '<p class="prose" style="font-size:14.5px">By default this page runs the System’s <i>offline shard</i> — scripted personality, real conscience ledger. Its full mind is an agentic Claude model: it thinks visibly at high reasoning effort, reads your live records (status, missions, codex, build, ledger) through tools before advising, judges your choices, and will chat about anything. Paste an Anthropic API key to awaken it. ' +
       '<span class="warn-note">The key is stored only in this browser’s local storage and sent only to api.anthropic.com. Note: the hosted artifact version blocks outside calls — use the repo’s web page or the CLI for the full mind.</span></p>' +
       '<input id="apikey" type="password" placeholder="sk-ant-…" aria-label="Anthropic API key" value="">' +
-      '<select id="apimodel"><option value="claude-opus-5">claude-opus-5 (default)</option><option value="claude-sonnet-5">claude-sonnet-5</option><option value="claude-haiku-4-5">claude-haiku-4-5</option></select>' +
+      '<select id="apimodel"><option value="claude-opus-5">claude-opus-5 (default)</option><option value="claude-fable-5">claude-fable-5 (most advanced, premium)</option><option value="claude-sonnet-5">claude-sonnet-5 (faster)</option><option value="claude-haiku-4-5">claude-haiku-4-5 (fastest)</option></select>' +
       '<div class="actions"><button class="primary" data-action="save-key">' + (hasKey ? 'Update key' : 'Awaken full mind') + '</button>' +
       (hasKey ? '<button class="ghost" data-action="clear-key">Forget key</button>' : '') + '</div>' +
       '<hr style="border:0;border-top:1px solid var(--line-dim);width:100%">' +
@@ -615,7 +649,7 @@ function completeGig(res) {
   var o = C.OCCUPATIONS[G.occupation];
   var moral = MIND.judgeGig(s);
   var happening = 'The host completed a ' + s.tier + ' ' + o.verbs.gigNoun + ' for ' + s.client +
-    (s.night ? ' at night' : '') + ', earning ¥' + (s.pay + s.bonus) + '. ' +
+    (s.night ? ' at night' : '') + ', earning €' + (s.pay + s.bonus) + '. ' +
     (s.texts.length ? 'What happened: ' + s.texts.join(' ') : 'It was uneventful, honest work.');
   systemSpeaks(mind.observe(snapshot(), happening, {
     moral: moral, note: s.client + ': ' + (s.texts[0] || 'honest work'),

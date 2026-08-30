@@ -494,7 +494,7 @@
     if (st.findCash > 0 && chance(s, st.findCash)) {
       found = randInt(s, 50, 200);
       s.cash += found;
-      addLog(s, '👃 Golden Nose: you find ¥' + found + ' tucked where only you would look.', 'reward');
+      addLog(s, '👃 Golden Nose: you find €' + found + ' tucked where only you would look.', 'reward');
     }
 
     // bookkeeping
@@ -530,7 +530,7 @@
 
     const clientName = isLegend ? legend.name : commonDef.name;
     const bonusWord = o.verbs.bonusNoun;
-    addLog(s, '✅ ' + o.verbs.gigNoun + ' complete — ' + clientName + '. ¥' + pay + ' + ¥' + bonus + ' ' + bonusWord + ', ' + points + ' pts, ' + (out.exp || 0) + ' EXP.', 'gig');
+    addLog(s, '✅ ' + o.verbs.gigNoun + ' complete — ' + clientName + '. €' + pay + ' + €' + bonus + ' ' + bonusWord + ', ' + points + ' pts, ' + (out.exp || 0) + ' EXP.', 'gig');
 
     checkQuestsAndAchievements(s);
 
@@ -555,7 +555,7 @@
       const amt = randInt(s, w.min, w.max);
       s.cash += amt;
       paid.push(amt);
-      addLog(s, '💰 Cai Shen’s tip pays off: +¥' + amt + '. The napkin was real.', 'reward');
+      addLog(s, '💰 Cai Shen’s tip pays off: +€' + amt + '. The napkin was real.', 'reward');
     }
     s.pendingWindfalls = [];
     s.day += 1;
@@ -620,7 +620,7 @@
     if (s.cash < price) return { ok: false, msg: 'Not enough cash.' };
     s.cash -= price;
     grantItem(s, id, 1);
-    addLog(s, '🛍️ Bought ' + item.name + ' for ¥' + price + '.', 'info');
+    addLog(s, '🛍️ Bought ' + item.name + ' for €' + price + '.', 'info');
     return { ok: true, price };
   }
 
@@ -754,11 +754,11 @@
     const lvl = up[part] || 0;
     if (lvl >= CFG.upgradeMax) return { ok: false, msg: 'Already at maximum.' };
     const cost = upgradeCost(s, id, part);
-    if (s.cash < cost) return { ok: false, msg: 'Not enough cash (need ¥' + cost + ').' };
+    if (s.cash < cost) return { ok: false, msg: 'Not enough cash (need €' + cost + ').' };
     s.cash -= cost;
     up[part] = lvl + 1;
     const o = occ(s);
-    addLog(s, '🔧 ' + o.partNames[part] + ' upgraded to Lv.' + up[part] + ' (−¥' + cost + ').', 'info');
+    addLog(s, '🔧 ' + o.partNames[part] + ' upgraded to Lv.' + up[part] + ' (−€' + cost + ').', 'info');
     checkQuestsAndAchievements(s);
     return { ok: true, level: up[part], cost };
   }
@@ -862,7 +862,7 @@
   function describeFx(fx) {
     if (!fx) return '';
     const parts = [];
-    if (fx.cash) parts.push('¥' + fx.cash);
+    if (fx.cash) parts.push('€' + fx.cash);
     if (fx.points) parts.push(fx.points + ' pts');
     if (fx.tickets) parts.push(fx.tickets + ' ticket' + (fx.tickets > 1 ? 's' : ''));
     if (fx.exp) parts.push(fx.exp + ' EXP');

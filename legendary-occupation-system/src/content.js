@@ -256,7 +256,7 @@
       ],
     },
     e_str_superchat: {
-      prompt: 'A ¥888 superchat from a user with no avatar: “Do you believe in spirits, host?”',
+      prompt: 'A €888 superchat from a user with no avatar: “Do you believe in spirits, host?”',
       choices: [
         { id: 'yes', label: 'Answer sincerely: yes', outcomes: [
           { w: 1, good: true, text: 'The chat goes quiet for one heartbeat. Somewhere, a door you can’t see opens a crack.', fx: { merit: 5, fame: 40, buff: { id: 'openDoor', kind: 'day', left: 1, fx: { legendBonus: 4 } } } },
@@ -768,7 +768,7 @@
       prompt: 'It is 2 a.m., and someone is absolutely shredding the seventh-floor corridor on flaming wheels. Unit 502 is already drafting a petition.',
       choices: [
         { id: 'ramp', label: 'Build him a proper ramp on the roof', outcomes: [
-          { w: 1, good: true, text: 'Materials: one weekend, ¥150, three tenants who “used to skate”. The roof becomes legendary. The corridor survives.', fx: { favor: 3, fame: 100, cash: -150, merit: 5 } },
+          { w: 1, good: true, text: 'Materials: one weekend, €150, three tenants who “used to skate”. The roof becomes legendary. The corridor survives.', fx: { favor: 3, fame: 100, cash: -150, merit: 5 } },
         ] },
         { id: 'hours', label: '[Amiable Face] Negotiate official Wheel Hours', req: { skill: 'amiableFace' }, outcomes: [
           { w: 1, good: true, text: 'Weekdays 4–6 p.m., festival exemptions, noise treaty annex C. He signs in flame. Unit 502 frames the treaty.', fx: { favor: 2, merit: 5 } },
@@ -959,14 +959,14 @@
       statNames: { pace: 'Speed', grace: 'Comfort', resonance: 'Resonance' },
       partNames: { partA: 'Engine', partB: 'Interior', partC: 'Charms' },
       sizeRange: [2, 16], payout: { base: 12, perUnit: 3.2 }, staminaBase: 16, staminaPerUnit: 0.5,
-      grantPreview: 'A brand-new sedan, a Platinum License, ¥8,888 signing bonus.',
+      grantPreview: 'A brand-new sedan, a Platinum License, €8,888 signing bonus.',
       grant: {
         lines: [
           '【 OCCUPATION CONFIRMED: RIDE-HAILING DRIVER 】',
           'Delivery complete. Please check the parking lot downstairs:',
           '· White Cloud Sedan — brand new, still smells like destiny',
           '· Platinum Ride-Hailing License — surge fees waived, forever',
-          '· ¥8,888 signing bonus, already in your account',
+          '· €8,888 signing bonus, already in your account',
           '· Skill installed: Smooth Operator',
           'System note: “Drive well, host. Some passengers tip in more than money.”',
         ],
@@ -1009,7 +1009,7 @@
           '· Riverside loft, 14th floor — deed already in your name',
           '· “Starlight” studio rig: camera, mic, lights, silent PC',
           '· 10,000 starter followers (organic*, do not ask)',
-          '· ¥6,666 creator fund + Verified Star Badge',
+          '· €6,666 creator fund + Verified Star Badge',
           '· Skill installed: Golden Voice',
           'System note: “Speak well, host. You never know who is lurking.”',
         ],
@@ -1031,7 +1031,7 @@
         { id: 'gymBro', name: 'Encouraging Gym Bro', weight: 12, line: 'LET’S GOOO. What are we, uh… what is this stream about.' },
         { id: 'cozyMom', name: 'Cozy Craft Mom', weight: 12, line: 'Knitting along. Language, please, there are yarn children present.' },
         { id: 'quietLurker', name: 'Quiet Lurker', weight: 12, line: '…', events: ['e_str_superchat'] },
-        { id: 'whaleDonor', name: 'Mysterious Whale Donor', weight: 4, rare: true, payMult: 2.2, line: '¥2,000 — “keep going.”' },
+        { id: 'whaleDonor', name: 'Mysterious Whale Donor', weight: 4, rare: true, payMult: 2.2, line: '€2,000 — “keep going.”' },
       ],
       events: ['e_str_troll', 'e_str_glitch', 'e_str_superchat', 'e_str_marathon'],
     },
@@ -1044,14 +1044,14 @@
       statNames: { pace: 'Kitchen Pace', grace: 'Flavor', resonance: 'Aroma' },
       partNames: { partA: 'Burner', partB: 'Seating', partC: 'Incense Shelf' },
       sizeRange: [1, 6], payout: { base: 20, perUnit: 16 }, staminaBase: 15, staminaPerUnit: 2,
-      grantPreview: 'A famous night-market stall, a hundred-year wok, ¥7,777 pantry fund.',
+      grantPreview: 'A famous night-market stall, a hundred-year wok, €7,777 pantry fund.',
       grant: {
         lines: [
           '【 OCCUPATION CONFIRMED: NIGHT-MARKET CHEF 】',
           'Stall no. 1 of Old Osmanthus Market is now yours:',
           '· “Wok of Ten Thousand Flavors” — seasoned for a century',
           '· Master knife set + the previous owner’s SECRET SAUCE recipe',
-          '· ¥7,777 pantry fund',
+          '· €7,777 pantry fund',
           '· Skill installed: Wok Hei',
           'System note: “Cook well, host. The aroma travels further than you think.”',
         ],
@@ -1086,14 +1086,14 @@
       statNames: { pace: 'Efficiency', grace: 'Bedside Manner', resonance: 'Insight' },
       partNames: { partA: 'Equipment', partB: 'Ward', partC: 'Talisman Cabinet' },
       sizeRange: [1, 5], payout: { base: 30, perUnit: 18 }, staminaBase: 15, staminaPerUnit: 2.5,
-      grantPreview: 'Your own clinic, the Nine Golden Needles, ¥9,999 founding fund.',
+      grantPreview: 'Your own clinic, the Nine Golden Needles, €9,999 founding fund.',
       grant: {
         lines: [
           '【 OCCUPATION CONFIRMED: CLINIC PHYSICIAN 】',
           'The Riverside Community Clinic has a new name on the door. Yours:',
           '· Full clinic — examination room, ward, herb wall, stubborn kettle',
           '· The Nine Golden Needles of a nameless grandmaster',
-          '· ¥9,999 founding fund',
+          '· €9,999 founding fund',
           '· Skill installed: Steady Hands',
           'System note: “Heal well, host. Not every pulse you take will be beating.”',
         ],
@@ -1128,14 +1128,14 @@
       statNames: { pace: 'Upkeep', grace: 'Hospitality', resonance: 'Feng Shui' },
       partNames: { partA: 'Facilities', partB: 'Lobby & Garden', partC: 'Feng Shui Array' },
       sizeRange: [1, 5], payout: { base: 28, perUnit: 15 }, staminaBase: 14, staminaPerUnit: 2,
-      grantPreview: 'An entire six-floor building, master keys, ¥5,555 renovation fund.',
+      grantPreview: 'An entire six-floor building, master keys, €5,555 renovation fund.',
       grant: {
         lines: [
           '【 OCCUPATION CONFIRMED: LANDLORD 】',
           'Property transfer complete. Congratulations on your BUILDING:',
           '· Golden Osmanthus Court — six floors, twenty units, one ancient tree',
           '· Master keys (the ring is heavier than it looks; so is the trust)',
-          '· ¥5,555 renovation fund',
+          '· €5,555 renovation fund',
           '· Skill installed: Amiable Face',
           'System note: “Manage well, host. Unit 404 has been empty a long time. Officially.”',
         ],
@@ -1166,9 +1166,9 @@
 
   // ----------------------------------------------------------------- wheel --
   const WHEEL = [
-    { w: 20, kind: 'cash', amount: 150, label: '¥150' },
-    { w: 10, kind: 'cash', amount: 400, label: '¥400' },
-    { w: 4, kind: 'cash', amount: 1000, label: '¥1,000' },
+    { w: 20, kind: 'cash', amount: 150, label: '€150' },
+    { w: 10, kind: 'cash', amount: 400, label: '€400' },
+    { w: 4, kind: 'cash', amount: 1000, label: '€1,000' },
     { w: 18, kind: 'points', amount: 60, label: '60 Points' },
     { w: 6, kind: 'points', amount: 200, label: '200 Points' },
     { w: 8, kind: 'ticket', amount: 1, label: 'Bonus Ticket' },
@@ -1179,17 +1179,17 @@
     { w: 5, kind: 'skill', rarity: 'common', label: 'Common Skill' },
     { w: 4, kind: 'skill', rarity: 'rare', label: 'Rare Skill' },
     { w: 2, kind: 'skill', rarity: 'epic', epicClass: true, label: 'EPIC Skill' },
-    { w: 1, kind: 'cash', amount: 8888, epicClass: true, label: 'JACKPOT ¥8,888' },
+    { w: 1, kind: 'cash', amount: 8888, epicClass: true, label: 'JACKPOT €8,888' },
   ];
 
   // --------------------------------------------------------------- dailies --
   const DAILY_POOL = [
     { id: 'd_gigs3', desc: 'Complete 3 jobs', counter: 'gigs', goal: 3, fx: { cash: 250 } },
     { id: 'd_night1', desc: 'Work 1 night job', counter: 'night', goal: 1, fx: { points: 40 } },
-    { id: 'd_earn600', desc: 'Earn ¥600 today', counter: 'earned', goal: 600, fx: { tickets: 1 } },
+    { id: 'd_earn600', desc: 'Earn €600 today', counter: 'earned', goal: 600, fx: { tickets: 1 } },
     { id: 'd_item1', desc: 'Use 1 item', counter: 'itemsUsed', goal: 1, fx: { cash: 120 } },
     { id: 'd_legend1', desc: 'Serve a legendary client', counter: 'legends', goal: 1, fx: { points: 60 } },
-    { id: 'd_bonus200', desc: 'Collect ¥200 in bonuses today', counter: 'bonus', goal: 200, fx: { cash: 180 } },
+    { id: 'd_bonus200', desc: 'Collect €200 in bonuses today', counter: 'bonus', goal: 200, fx: { cash: 180 } },
     { id: 'd_units20', desc: 'Cover 20 units of work today', counter: 'units', goal: 20, fx: { points: 30 } },
     { id: 'd_clean2', desc: 'Finish 2 jobs without losing rating', counter: 'clean', goal: 2, fx: { points: 25 } },
   ];
@@ -1210,7 +1210,7 @@
   const ACHIEVEMENTS = [
     { id: 'a_firstLegend', name: 'First Contact', desc: 'Serve your first legendary client.', check: { type: 'legendsMet', n: 1 }, points: 50 },
     { id: 'a_night10', name: 'Creature of the Night', desc: 'Complete 10 night jobs.', check: { type: 'nightGigs', n: 10 }, points: 80 },
-    { id: 'a_cash10k', name: 'Comfortably Liquid', desc: 'Hold ¥10,000 at once.', check: { type: 'cashHeld', n: 10000 }, points: 100 },
+    { id: 'a_cash10k', name: 'Comfortably Liquid', desc: 'Hold €10,000 at once.', check: { type: 'cashHeld', n: 10000 }, points: 100 },
     { id: 'a_streak7', name: 'Habit of Legends', desc: 'Sign in 7 days in a row.', check: { type: 'streak', n: 7 }, points: 120 },
     { id: 'a_gigs100', name: 'Hundred Roads', desc: 'Complete 100 jobs.', check: { type: 'gigs', n: 100 }, points: 200 },
     { id: 'a_maxAsset', name: 'Pride of the Trade', desc: 'Fully upgrade any workplace.', check: { type: 'maxAsset' }, points: 150 },

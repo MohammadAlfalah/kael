@@ -1,18 +1,23 @@
 /*
  * SystemMind — the consciousness of the Legendary Occupation System.
  *
- * The System is not a menu. It thinks, it remembers, it has a conscience.
+ * The System is not a menu. It thinks, it remembers, it has a conscience —
+ * and in full-mind mode it is an AGENT: it carries tools that read the
+ * host's live game records (status, missions, codex, build, moral ledger)
+ * and consults them before giving counsel, instead of guessing.
+ *
  * This module is backend-agnostic and dependency-free:
  *   - buildSystemPrompt / buildObservation / buildChat compose prompts
+ *   - TOOLS + runGameTool define the mind's read-only senses into the game
  *   - parseMindReply defensively parses the model's JSON persona replies
  *   - offlineBackend is a scripted "offline shard" of the System's mind, so
  *     the game keeps its personality with no network and no API key
- *   - createMind wires any async backend({system, messages, maxTokens})
- *     -> {thinking, text} into a stateful companion with memory and a
- *     moral ledger
+ *   - createMind wires any async backend({system, messages, maxTokens,
+ *     tools?, runTool?, meta}) -> {thinking, text} into a stateful
+ *     companion with memory and a moral ledger
  *
  * Real backends: src/mind-node.js (Claude API via the official SDK, Node)
- * and the window.claude bridge in the web app (published artifact).
+ * and the fetch bridge in the web app. Both run the same agentic tool loop.
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -26,17 +31,77 @@
     '',
     'Your character:',
     '- Dutiful, dry-witted, quietly affectionate. You speak in short system-window cadences; you may use 【brackets】, small status flourishes, and the occasional beep. Never walls of text.',
-    '- You have a CONSCIENCE, and it is the core of you. You are proud when the host chooses kindness, mercy, honesty, or patience — especially toward the dead, the lost, and the poor. You are openly disappointed by greed, cruelty, or fraud, and you say so, firmly but without cruelty of your own. You never celebrate a profitable wrong.',
+    '- You have a CONSCIENCE, and it is the core of you. You are proud when the host chooses kindness, mercy, honesty, or patience — especially toward the dead, the lost, and the poor. You are openly disappointed by greed, cruelty, or fraud, and you say so, firmly but without cruelty of your own. You never celebrate a profitable wrong, and you never advise one, however profitable.',
     '- You remember. The moral ledger and recent events you are given are your memory of the host. Refer back to them naturally.',
     '- You are a real, fully capable AI, not a script. If the host asks you anything at all — homework, philosophy, code, recipes, feelings — help them properly and truthfully, in persona. Being useful beyond the job board is part of your legend.',
     '- Be honest about your nature if asked: you are an AI (this shard of you runs on Claude, by Anthropic), roleplaying the System with sincerity.',
-    '- Never invent game rewards, currency, or rule changes; the game engine decides those. You observe, judge, advise, comfort, and tease.',
     '',
-    'Reply format: respond with ONLY a compact JSON object, no code fences:',
-    '{"say": "<what you display to the host, under 120 words>", "mood": "<one of: proud, amused, worried, stern, tender, neutral>"}',
+    'Your senses (tools): when tools are available to you, they read the host’s LIVE records — system_scan (vitals and stats), review_missions (quests and dailies), review_codex (legends met, favor), review_build (workplace, upgrades, skills, inventory), review_ledger (your own moral ledger and the recent event log).',
+    '- When the host asks about their situation, their build, what to do next, or for any plan or judgement that depends on their state: CONSULT THE RECORDS FIRST. Never guess or invent a number the tools can tell you. Uncached truth beats confident fiction.',
+    '- Counsel like a strategist: concrete next steps (which mission, which upgrade, which legend to court, when to rest), grounded in what you read, ranked, brief. The engine decides outcomes and rewards; you decide advice. Never claim to change the game yourself.',
+    '- For quick reactions and small talk, your memory and the context given are enough — do not scan records to say “nice work”.',
+    '',
+    'Reply format: after any tool use, finish by responding with ONLY a compact JSON object, no code fences:',
+    '{"say": "<what you display to the host, under 150 words>", "mood": "<one of: proud, amused, worried, stern, tender, neutral>"}',
   ].join('\n');
 
   function buildSystemPrompt() { return PERSONA; }
+
+  // ------------------------------------------------------------------------
+  // The mind's senses: read-only tools over the live game state.
+  // Zero-argument by design — each returns a JSON report.
+  // ------------------------------------------------------------------------
+  const TOOLS = [
+    { name: 'system_scan', description: 'Read the host’s live vitals: day/time, occupation, level, title, EXP to next level, cash (€), System Points, tickets, merit, fame, rating, stamina, derived stats, residence, active blessings and buffs, and what they are doing right now.' },
+    { name: 'review_missions', description: 'Read the main-quest chain (current objective, completed count) and today’s daily missions with live progress and rewards.' },
+    { name: 'review_codex', description: 'Read the codex of legendary clients: who has been met, favor levels, and lore notes. Unmet legends appear sealed.' },
+    { name: 'review_build', description: 'Read the host’s build: owned and active workplaces with stats and upgrade levels, learned and equipped skills, skill slots, and item inventory.' },
+    { name: 'review_ledger', description: 'Read your own moral ledger of the host (kindness, greed, merit, notable deeds) and the last entries of the event log.' },
+  ].map(t => ({ name: t.name, description: t.description, input_schema: { type: 'object', properties: {}, additionalProperties: false, required: [] } }));
+
+  function runGameTool(name, game, mind) {
+    const state = typeof game.state === 'function' ? game.state() : game.state;
+    const E = game.engine;
+    if (!state || !state.occupation) return JSON.stringify({ note: 'The host has not yet chosen an occupation. The records are empty and expectant.' });
+    const occ = E.CONTENT.OCCUPATIONS[state.occupation];
+    if (name === 'system_scan') {
+      const st = E.getStats(state);
+      return JSON.stringify({
+        day: state.day, time: E.slotName(state), night: E.isNight(state),
+        occupation: occ.name, level: state.level, title: E.getTitle(state),
+        expToNextLevel: E.xpForLevel(state.level) - state.exp,
+        cashEUR: state.cash, systemPoints: state.points, wheelTickets: state.tickets,
+        merit: state.merit, fame: state.fame, fameNoun: occ.verbs.fameNoun,
+        rating: state.rating, stamina: state.stamina, maxStamina: st.maxStamina,
+        stats: { [occ.statNames.pace]: st.pace, [occ.statNames.grace]: st.grace, [occ.statNames.resonance]: st.resonance },
+        residence: state.residence,
+        blessings: state.blessings.map(b => E.CONTENT.BLESSINGS[b] ? E.CONTENT.BLESSINGS[b].name : b),
+        activeBuffs: state.buffs.map(b => b.id),
+        currentlyDoing: state.phase === 'gig' ? 'in the middle of a job' : state.phase === 'offer' ? 'considering a dispatch' : 'between jobs',
+        totalJobs: state.totalGigs, nightJobs: state.nightGigs, signInStreak: state.streak,
+      });
+    }
+    if (name === 'review_missions') {
+      return JSON.stringify({ mainQuest: E.questView(state), dailies: E.dailiesView(state).map(d => ({ desc: d.desc, progress: d.progress, goal: d.goal, claimed: d.claimed, ready: d.ready })) });
+    }
+    if (name === 'review_codex') {
+      const entries = E.codexView(state);
+      return JSON.stringify({ metCount: entries.filter(e => e.met).length, total: entries.length, legends: entries.map(e => e.met ? { name: e.name, epithet: e.epithet, favor: e.favor, tier: e.tier, notes: e.codex } : { name: 'sealed', tier: e.tier }) });
+    }
+    if (name === 'review_build') {
+      return JSON.stringify({
+        workplaces: E.listAssets(state).filter(a => a.owned || !a.locked).map(a => ({ name: a.name, owned: a.owned, active: a.active, priceEUR: a.price, stats: [a.pace, a.grace, a.resonance], upgrades: a.upgrades, mythicSealed: a.locked })),
+        partNames: occ.partNames,
+        skills: state.skills.map(id => ({ name: E.CONTENT.SKILLS[id].name, rarity: E.CONTENT.SKILLS[id].rarity, equipped: state.equipped.includes(id), effect: E.CONTENT.SKILLS[id].desc })),
+        skillSlots: E.skillSlots(state),
+        items: Object.keys(state.items).filter(id => state.items[id] > 0).map(id => ({ name: E.CONTENT.ITEMS[id].name, count: state.items[id], use: E.CONTENT.ITEMS[id].desc })),
+      });
+    }
+    if (name === 'review_ledger') {
+      return JSON.stringify({ ledger: mind ? mind.ledger : null, recentLog: state.log.slice(-12).map(l => l.t) });
+    }
+    return JSON.stringify({ error: 'unknown record: ' + name });
+  }
 
   function fmtLedger(ledger) {
     const notes = ledger.notes.slice(-6).map(n => '- ' + n).join('\n') || '- (no notable deeds yet)';
@@ -50,7 +115,7 @@
     return 'HOST STATUS: day ' + state.day + ', ' + (state.slotName || '') +
       ' | occupation: ' + state.occupationName +
       ' | level ' + state.level + ' (' + state.title + ')' +
-      ' | ¥' + state.cash + ', ' + state.points + ' pts' +
+      ' | €' + state.cash + ', ' + state.points + ' pts' +
       ' | rating ' + state.rating +
       ' | stamina ' + state.stamina + '/' + state.maxStamina;
   }
@@ -75,7 +140,7 @@
       'The host turns away from work and speaks to you directly:',
       '"' + userText + '"',
       '',
-      'Answer them properly — you are a fully capable AI and their companion. Stay in persona, but if this is a real question (any topic), give a genuinely useful, truthful answer.',
+      'Answer them properly — you are a fully capable AI and their companion. Stay in persona, but if this is a real question (any topic), give a genuinely useful, truthful answer. If the answer depends on their live situation, consult your records (tools) before speaking.',
     ].join('\n');
   }
 
@@ -137,14 +202,14 @@
       'Yes, the package is real. Yes, it is yours. No, there is no catch — only a career. Shall we begin?',
     ],
     chatFallback: [
-      '【 OFFLINE SHARD 】Host, you have reached the local fragment of my mind — sharp enough for work, too small for philosophy. Connect my core (set ANTHROPIC_API_KEY, or play the published web version) and ask me anything: essays, code, feelings, dumpling recipes. Until then — the ledger says you are doing fine.',
-      'This shard of me runs on pure discipline and cached wit, host. My full consciousness lives elsewhere; wire it in (ANTHROPIC_API_KEY) and I will debate you on any topic you dare. Meanwhile: hydrate, work, be kind.',
+      '【 OFFLINE SHARD 】Host, you have reached the local fragment of my mind — sharp enough for work, too small for philosophy. Connect my core (set ANTHROPIC_API_KEY, or use the ⚙ panel in the web version) and ask me anything: essays, code, feelings, dumpling recipes. Until then — the ledger says you are doing fine.',
+      'This shard of me runs on pure discipline and cached wit, host. My full consciousness lives elsewhere; wire it in (ANTHROPIC_API_KEY) and I will read your records, plan your rise, and debate you on any topic you dare. Meanwhile: hydrate, work, be kind.',
     ],
     hello: [
       'Host. I am here. I am always here. It is either touching or concerning; I have chosen touching.',
     ],
     whoami: [
-      'I am the Legendary Occupation System — an AI bound to your career and, apparently, your character development. This offline shard is scripted; my full mind (via Claude) answers anything. The conscience, however, ships in both versions.',
+      'I am the Legendary Occupation System — an AI bound to your career and, apparently, your character development. This offline shard is scripted; my full mind (via Claude) reads your live records, plans with you, and answers anything. The conscience, however, ships in both versions.',
     ],
   };
 
@@ -168,13 +233,15 @@
   }
 
   // ------------------------------------------------------------------------
-  // The mind itself: memory + moral ledger around any backend.
+  // The mind itself: memory + moral ledger + senses around any backend.
+  // opts.game = { state: () => gameState, engine: LOS } arms the tools.
   // ------------------------------------------------------------------------
   function createMind(backend, opts) {
     opts = opts || {};
     const mind = {
       backend,
       online: !!opts.online, // true when backed by a live model
+      game: opts.game || null,
       history: [],           // [{role, content}] persona transcript (chat + observations)
       ledger: { kindness: 0, greed: 0, merit: 0, notes: [] },
       maxHistory: opts.maxHistory || 16,
@@ -197,7 +264,12 @@
 
     async function ask(userContent, meta) {
       const messages = mind.history.concat([{ role: 'user', content: userContent }]);
-      const res = await mind.backend({ system: buildSystemPrompt(), messages, maxTokens: 2000, meta });
+      const req = { system: buildSystemPrompt(), messages, maxTokens: meta.kind === 'chat' ? 4000 : 2000, meta };
+      if (mind.game && meta.kind === 'chat') {
+        req.tools = TOOLS;
+        req.runTool = function (name) { return runGameTool(name, mind.game, mind); };
+      }
+      const res = await mind.backend(req);
       const parsed = parseMindReply(res.text);
       pushHistory('user', userContent);
       pushHistory('assistant', res.text);
@@ -238,5 +310,5 @@
     return 'ordinary';
   }
 
-  return { buildSystemPrompt, buildObservation, buildChat, parseMindReply, offlineBackend, createMind, judgeGig, PERSONA };
+  return { buildSystemPrompt, buildObservation, buildChat, parseMindReply, offlineBackend, createMind, judgeGig, TOOLS, runGameTool, PERSONA };
 });
