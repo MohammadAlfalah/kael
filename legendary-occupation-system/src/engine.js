@@ -69,6 +69,7 @@
       dailies: [], today: blankToday(),
       codex: {}, favor: {}, favorClaimed: {},
       achievements: [],
+      contracts: [],
       pendingWindfalls: [],
       offer: null, gig: null,
       log: [],
@@ -518,6 +519,10 @@
       if (g.clientId === 'jadeEmperor') { s.specials.jadeEmperor = true; s.mythicArmed = false; }
     }
 
+    // contracts: progress first, so the job that spawns one never counts toward it
+    progressContracts(s, g, pay + bonus);
+    if (isLegend && (s.favor[g.clientId] || 0) >= 3) maybeOfferContract(s, g.clientId);
+
     // decay gig-scoped buffs
     s.buffs = s.buffs.filter(b => {
       if (b.kind === 'gigs') { b.left -= 1; return b.left > 0; }
@@ -559,6 +564,15 @@
     }
     s.pendingWindfalls = [];
     s.day += 1;
+    if (s.contracts && s.contracts.length) {
+      s.contracts = s.contracts.filter(c => {
+        if (s.day > c.deadline) {
+          addLog(s, '🍂 The contract with ' + legendById(c.legendId).name + ' lapses quietly: ' + c.desc + '. Legends have long memories and longer patience.', 'info');
+          return false;
+        }
+        return true;
+      });
+    }
     s.slot = CFG.slotStart;
     s.stamina = getStats(s).maxStamina;
     s.today = blankToday();
@@ -588,6 +602,71 @@
       const progress = Math.min(def.goal, s.today[def.counter] || 0);
       return { id: def.id, desc: def.desc, progress, goal: def.goal, fx: def.fx, claimed: entry.claimed, ready: !entry.claimed && progress >= def.goal };
     });
+  }
+
+  // -------------------------------------------------------------- contracts --
+  function maybeOfferContract(s, legendId) {
+    if (!s.contracts) s.contracts = [];
+    if (s.contracts.length >= C.CONTRACT_MAX_ACTIVE) return null;
+    if (s.contracts.some(c => c.legendId === legendId)) return null;
+    if (!chance(s, C.CONTRACT_CHANCE)) return null;
+    return offerContract(s, legendId);
+  }
+
+  function offerContract(s, legendId) {
+    if (!s.contracts) s.contracts = [];
+    const legend = legendById(legendId);
+    const tpl = C.CONTRACTS[randInt(s, 0, C.CONTRACTS.length - 1)];
+    const goal = randInt(s, tpl.goal[0], tpl.goal[1]);
+    const generous = legend.tier === 'legendary' ? 1.5 : 1;
+    const fx = {};
+    for (const k of Object.keys(tpl.fx)) fx[k] = Math.round(tpl.fx[k] * generous);
+    const contract = {
+      legendId, tplId: tpl.id, counter: tpl.counter,
+      desc: tpl.desc.replace('{n}', goal).replace('{d}', tpl.days),
+      goal, progress: 0, deadline: s.day + tpl.days, fx,
+    };
+    s.contracts.push(contract);
+    addLog(s, '📜 ' + legend.name + ' extends a contract: ' + contract.desc + ' → ' + describeFx(fx) + '. The System files the paperwork instantly.', 'quest');
+    return contract;
+  }
+
+  function progressContracts(s, gig, earned) {
+    if (!s.contracts || !s.contracts.length) return;
+    const fulfilled = [];
+    for (const c of s.contracts) {
+      if (c.counter === 'gigs') c.progress += 1;
+      else if (c.counter === 'night' && gig.night) c.progress += 1;
+      else if (c.counter === 'earned') c.progress += earned;
+      else if (c.counter === 'clean' && !gig.ratingLost) c.progress += 1;
+      if (c.progress >= c.goal) fulfilled.push(c);
+    }
+    for (const c of fulfilled) {
+      s.contracts.splice(s.contracts.indexOf(c), 1);
+      addLog(s, '🏵️ Contract fulfilled for ' + legendById(c.legendId).name + ': ' + c.desc + ' → ' + describeFx(c.fx), 'quest');
+      applyFx(s, c.fx);
+      bumpFavor(s, c.legendId, 1);
+    }
+  }
+
+  function contractsView(s) {
+    return (s.contracts || []).map(c => {
+      const legend = legendById(c.legendId);
+      return { legend: legend.name, legendId: c.legendId, desc: c.desc, progress: Math.min(c.goal, Math.round(c.progress)), goal: c.goal, daysLeft: c.deadline - s.day, fx: c.fx };
+    });
+  }
+
+  // ---------------------------------------------------------------- records --
+  function recordsView(s) {
+    return {
+      day: s.day, level: s.level, title: getTitle(s),
+      totalGigs: s.totalGigs, nightGigs: s.nightGigs,
+      totalEarned: s.totalEarned, spins: s.spins,
+      bestStreak: s.bestStreak, merit: s.merit, fame: s.fame,
+      legendsMet: Object.keys(s.codex).length, legendsTotal: C.LEGENDS.length,
+      questsDone: s.questIdx, questsTotal: C.MAIN_QUESTS.length,
+      achievements: C.ACHIEVEMENTS.map(a => ({ id: a.id, name: a.name, desc: a.desc, points: a.points, earned: s.achievements.includes(a.id) })),
+    };
   }
 
   function claimDaily(s, id) {
@@ -855,6 +934,7 @@
   function load(str) {
     const s = JSON.parse(str);
     if (!s || s.v !== 1) throw new Error('Unsupported save version');
+    if (!s.contracts) s.contracts = []; // saves from before contracts existed
     return s;
   }
 
@@ -882,9 +962,9 @@
     buyTicket, spinWheel,
     listAssets, buyAsset, selectAsset, upgradeAsset, upgradeCost,
     equipSkill, unequipSkill, skillSlots,
-    claimDaily, dailiesView, questView, codexView,
+    claimDaily, dailiesView, questView, codexView, contractsView, recordsView,
     getStats, getTitle, xpForLevel, isNight, slotName, describeFx,
     save, load,
-    _test: { rand, randInt, chance, weighted, applyFx, grantExp, checkCondition, bumpFavor, addLog },
+    _test: { rand, randInt, chance, weighted, applyFx, grantExp, checkCondition, bumpFavor, addLog, offerContract, progressContracts, maybeOfferContract },
   };
 });

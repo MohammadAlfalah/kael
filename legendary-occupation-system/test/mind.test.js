@@ -160,6 +160,20 @@ test('the economy speaks euros, with no yen leftovers', () => {
   assert.ok(!JSON.stringify(s.log).includes('¥'), 'no yen in the boot log');
 });
 
+test('the morning broadcast speaks in rumors', async () => {
+  const mind = MIND.createMind(MIND.offlineBackend());
+  const snap = { occupation: 'chef', occupationName: 'Chef', day: 2, slotName: 'Dawn', level: 1, title: 'System Rookie', cash: 500, points: 50, rating: '5.00', stamina: 100, maxStamina: 100 };
+  const res = await mind.rumor(snap, { seed: 3 });
+  assert.match(res.say, /SYSTEM BROADCAST/);
+  assert.match(MIND.buildRumor(mind, snap), /SYSTEM BROADCAST/);
+  // rumor turns never arm tools, even on an armed mind
+  const captured = [];
+  const spy = async (req) => { captured.push(req); return { thinking: null, text: '{"say":"x","mood":"neutral"}' }; };
+  const armed = MIND.createMind(spy, { game: { state: () => ({ occupation: null }), engine: LOS } });
+  await armed.rumor(snap);
+  assert.equal(captured[0].tools, undefined);
+});
+
 test('node Claude backend degrades gracefully without network use', () => {
   assert.equal(typeof nodeMind.sdkAvailable(), 'boolean');
   assert.equal(typeof nodeMind.MODEL, 'string');

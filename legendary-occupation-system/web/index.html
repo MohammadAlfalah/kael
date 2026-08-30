@@ -533,6 +533,7 @@ var TABS = [
   { id: 'wheel', label: '🎡 Wheel' },
   { id: 'skills', label: '📜 Skills' },
   { id: 'codex', label: '📖 Codex' },
+  { id: 'records', label: '🏅 Records' },
   { id: 'settings', label: '⚙ Mind & Save' },
 ];
 function renderDock() {
@@ -555,8 +556,15 @@ function renderPanel() {
         '<span class="dim num">' + d.progress + '/' + d.goal + '</span>';
       return '<div class="card"><h3>' + esc(d.desc) + '</h3><div class="mission-bar"><i style="width:' + pct + '%"></i></div><div class="rowline"><span class="dim">' + esc(LOS.describeFx(d.fx)) + '</span>' + btn + '</div></div>';
     }).join('');
+    var contracts = LOS.contractsView(G).map(function (c) {
+      var pct = Math.round(100 * c.progress / c.goal);
+      return '<div class="card win gold"><h3>📜 ' + esc(c.legend) + '</h3><div class="blurb">' + esc(c.desc) + '</div>' +
+        '<div class="mission-bar"><i style="width:' + pct + '%"></i></div>' +
+        '<div class="rowline"><span class="dim num">' + c.progress + '/' + c.goal + ' · ' + c.daysLeft + ' day' + (c.daysLeft === 1 ? '' : 's') + ' left</span><span class="dim">' + esc(LOS.describeFx(c.fx)) + '</span></div></div>';
+    }).join('');
     panel.innerHTML = '<span class="label">Main quest — ' + qv.completed.length + '/' + qv.total + '</span>' +
       '<p class="prose">' + (qv.current ? '▸ <b>' + esc(qv.current.name) + '</b> — ' + esc(qv.current.desc) : 'The chain is complete.') + '</p>' +
+      (contracts ? '<span class="label gold">Legend contracts</span><div class="grid2" style="margin:8px 0 14px">' + contracts + '</div>' : '') +
       '<span class="label">Daily missions</span><div class="grid2" style="margin-top:8px">' + dailies + '</div>';
   } else if (activeTab === 'workplace') {
     var assets = LOS.listAssets(G).map(function (a) {
@@ -618,6 +626,23 @@ function renderPanel() {
           (e.met ? ' <span class="favor-hearts">💗 favor ' + e.favor + '</span>' : '') + '</h3>' +
           '<div class="quiet">' + esc(e.codex) + '</div></div>';
       }).join('') + '</div>';
+  } else if (activeTab === 'records') {
+    var rec = LOS.recordsView(G);
+    var achievements = rec.achievements.map(function (a) {
+      return '<div class="card' + (a.earned ? ' win gold' : '') + '"><h3>' + (a.earned ? '🥇 ' : '○ ') + esc(a.name) + '</h3>' +
+        '<div class="blurb">' + esc(a.desc) + '</div><div class="dim num" style="font-family:var(--hud);font-size:12px">+' + a.points + ' pts</div></div>';
+    }).join('');
+    panel.innerHTML = '<span class="label">System records — ' + esc(rec.title) + '</span>' +
+      '<div class="paytable" style="margin-top:10px">' +
+      '<b>Jobs</b><span class="v">' + rec.totalGigs + ' (' + rec.nightGigs + ' night)</span>' +
+      '<b>Lifetime earned</b><span class="v">€' + rec.totalEarned.toLocaleString() + '</span>' +
+      '<b>Wheel spins</b><span class="v">' + rec.spins + '</span>' +
+      '<b>Best sign-in streak</b><span class="v">' + rec.bestStreak + '</span>' +
+      '<b>Merit</b><span class="v">' + rec.merit + '</span>' +
+      '<b>Legends met</b><span class="v">' + rec.legendsMet + '/' + rec.legendsTotal + '</span>' +
+      '<b>Main quests</b><span class="v">' + rec.questsDone + '/' + rec.questsTotal + '</span>' +
+      '</div>' +
+      '<span class="label">Achievements</span><div class="grid2" style="margin-top:8px">' + achievements + '</div>';
   } else if (activeTab === 'settings') {
     var hasKey = !!lsGet(KEY_KEY);
     panel.innerHTML = '<div class="settings-block">' +
@@ -681,7 +706,11 @@ var actions = {
   },
   'endday': function () {
     var r = LOS.endDay(G);
-    if (r.ok) { pendingSummary = null; toast('Day ' + r.day + ' begins.'); }
+    if (r.ok) {
+      pendingSummary = null;
+      toast('Day ' + r.day + ' begins.');
+      systemSpeaks(mind.rumor(snapshot(), { seed: G.seed + G.day })); // morning broadcast
+    }
     afterEngine(r);
   },
   'chat': function () {
@@ -701,13 +730,14 @@ var actions = {
   'use-item': function (el) { afterEngine(LOS.useItem(G, el.dataset.id)); },
   'spin': function () {
     var r = LOS.spinWheel(G);
-    if (r.ok) {
-      var box = $('wheelResult');
+    if (!r.ok) return toast(r.msg);
+    autosave(); renderHud();
+    if (activeTab === 'wheel') renderPanel(); // refresh ticket/pity counters
+    var box = $('wheelResult');
+    if (box) {
       var msg = '🎡 ' + r.prize.label + (r.prize.skillName ? ' — ' + r.prize.skillName : '') + (r.prize.epicClass ? '  ✨ THE WHEEL BLAZES ✨' : '');
-      if (box) box.innerHTML = '<div class="outcome" style="border-left-color:' + (r.prize.epicClass ? 'var(--gold)' : 'var(--glow-dim)') + '">' + esc(msg) + '</div>';
-      autosave(); renderHud();
-      var pity = $('panel'); if (activeTab === 'wheel') { renderPanel(); var b2 = $('wheelResult'); if (b2) b2.innerHTML = '<div class="outcome">' + esc(msg) + '</div>'; }
-    } else toast(r.msg);
+      box.innerHTML = '<div class="outcome"' + (r.prize.epicClass ? ' style="border-left-color:var(--gold)"' : '') + '>' + esc(msg) + '</div>';
+    }
   },
   'buy-ticket': function () { afterEngine(LOS.buyTicket(G)); },
   'toggle-skill': function (el) {

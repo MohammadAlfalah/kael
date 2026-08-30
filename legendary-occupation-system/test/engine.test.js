@@ -398,6 +398,72 @@ test('content integrity: every referenced id resolves', () => {
   }
 });
 
+test('legend contracts: offer, progress, fulfillment, and favor bonus', () => {
+  const s = freshGame(67, 'carHailer');
+  s.favor.dragonKing = 3;
+  const c = LOS._test.offerContract(s, 'dragonKing');
+  assert.ok(c.goal >= 2, 'goal drawn from template range');
+  assert.ok(c.deadline > s.day, 'deadline in the future');
+  assert.ok(!c.desc.includes('{'), 'placeholders resolved: ' + c.desc);
+  const tpl = C.CONTRACTS.find(t => t.id === c.tplId);
+  for (const k of Object.keys(tpl.fx)) {
+    assert.equal(c.fx[k], Math.round(tpl.fx[k] * 1.5), 'legendary-tier patrons pay 1.5x on ' + k);
+  }
+  const before = { cash: s.cash, points: s.points, tickets: s.tickets, merit: s.merit, favor: s.favor.dragonKing };
+  for (let i = 0; i < 8 && s.contracts.length; i++) {
+    LOS._test.progressContracts(s, { night: true, ratingLost: false }, 500);
+  }
+  assert.equal(s.contracts.length, 0, 'contract fulfilled and removed');
+  for (const k of Object.keys(c.fx)) {
+    assert.equal(s[k === 'cash' ? 'cash' : k === 'points' ? 'points' : k === 'tickets' ? 'tickets' : 'merit'], before[k] + c.fx[k], 'reward paid: ' + k);
+  }
+  assert.equal(s.favor.dragonKing, before.favor + 1, 'fulfillment deepens favor');
+  assert.ok(s.log.some(l => /Contract fulfilled/.test(l.t)));
+});
+
+test('contracts lapse at their deadline without penalty', () => {
+  const s = freshGame(71, 'landlord');
+  s.favor.yueLao = 5;
+  const c = LOS._test.offerContract(s, 'yueLao');
+  const days = c.deadline - s.day;
+  for (let i = 0; i <= days; i++) LOS.endDay(s);
+  assert.equal(s.contracts.length, 0, 'expired contract removed');
+  assert.ok(s.log.some(l => /lapses quietly/.test(l.t)));
+  assert.equal(s.favor.yueLao, 5, 'no favor penalty for a lapsed contract');
+});
+
+test('at most two contracts run at once, and one per legend', () => {
+  const s = freshGame(73, 'chef');
+  LOS._test.offerContract(s, 'mengPo');
+  assert.equal(LOS._test.maybeOfferContract(s, 'mengPo'), null, 'no second contract from the same legend');
+  LOS._test.offerContract(s, 'foxSpirit');
+  for (let i = 0; i < 20; i++) {
+    assert.equal(LOS._test.maybeOfferContract(s, 'baiSuzhen'), null, 'cap of two holds regardless of luck');
+  }
+  const view = LOS.contractsView(s);
+  assert.equal(view.length, 2);
+  assert.ok(view[0].legend && view[0].daysLeft >= 1);
+});
+
+test('records view aggregates lifetime stats and achievements', () => {
+  const s = freshGame(83, 'streamer');
+  playGig(s);
+  const r = LOS.recordsView(s);
+  assert.equal(r.totalGigs, 1);
+  assert.equal(r.legendsTotal, 13);
+  assert.equal(r.achievements.length, C.ACHIEVEMENTS.length);
+  assert.ok(r.achievements.every(a => typeof a.earned === 'boolean' && a.name && a.desc));
+  assert.ok(r.totalEarned > 0);
+});
+
+test('saves from before contracts existed migrate cleanly', () => {
+  const s = freshGame(89, 'physician');
+  const raw = JSON.parse(LOS.save(s));
+  delete raw.contracts;
+  const restored = LOS.load(JSON.stringify(raw));
+  assert.deepEqual(restored.contracts, []);
+});
+
 test('a long honest grind stays stable (100 gigs, no crashes, sane economy)', () => {
   const s = freshGame(61, 'chef');
   let guard = 0;

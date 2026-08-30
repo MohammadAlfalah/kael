@@ -187,6 +187,23 @@ async function missions() {
     const r = LOS.claimDaily(state, d.id);
     if (r.ok) console.log(gold('  Claimed: ' + d.desc + ' → ' + LOS.describeFx(d.fx)));
   }
+  const contracts = LOS.contractsView(state);
+  if (contracts.length) {
+    console.log(bold('\n📜 Legend Contracts'));
+    contracts.forEach(c => console.log('  ' + mag(c.legend) + ' — ' + c.desc + dim(' (' + c.progress + '/' + c.goal + ', ' + c.daysLeft + ' day' + (c.daysLeft === 1 ? '' : 's') + ' left) → ' + LOS.describeFx(c.fx))));
+  }
+}
+
+function records() {
+  const r = LOS.recordsView(state);
+  console.log(bold('\n🏅 System Records — ') + gold(r.title) + dim(' (Lv.' + r.level + ', day ' + r.day + ')'));
+  console.log('  Jobs ' + r.totalGigs + ' (' + r.nightGigs + ' at night) · earned €' + r.totalEarned.toLocaleString() +
+    ' · spins ' + r.spins + ' · best streak ' + r.bestStreak + ' · merit ' + r.merit);
+  console.log('  Legends met ' + r.legendsMet + '/' + r.legendsTotal + ' · quests ' + r.questsDone + '/' + r.questsTotal);
+  console.log(bold('\n  Achievements'));
+  for (const a of r.achievements) {
+    console.log('  ' + (a.earned ? gold('🥇 ' + a.name) : dim('○ ' + a.name)) + dim(' — ' + a.desc + ' (+' + a.points + ' pts)'));
+  }
 }
 
 async function workplace() {
@@ -309,6 +326,7 @@ async function main() {
       { id: 'wheel', label: 'Wheel of Destiny 🎡' },
       { id: 'skills', label: 'Skills 📜' },
       { id: 'codex', key: 'c', label: 'Codex 📖' },
+      { id: 'records', key: 'r', label: 'Records 🏅' },
       { id: 'endday', key: 'e', label: 'End the day 🌙' },
       { id: 'save', key: 's', label: 'Save' },
       { id: 'quit', key: 'q', label: 'Save & quit' },
@@ -323,7 +341,14 @@ async function main() {
     else if (act === 'wheel') await wheel();
     else if (act === 'skills') await skillsMenu();
     else if (act === 'codex') codex();
-    else if (act === 'endday') { const r = LOS.endDay(state); console.log(r.ok ? cyan('🌅 Day ' + r.day + ' begins.') : red(r.msg)); }
+    else if (act === 'records') records();
+    else if (act === 'endday') {
+      const r = LOS.endDay(state);
+      if (r.ok) {
+        console.log(cyan('🌅 Day ' + r.day + ' begins.'));
+        await systemSpeaks(mind.rumor(snapshot(), { seed: state.seed + state.day }));
+      } else console.log(red(r.msg));
+    }
     else if (act === 'save') saveGame();
     else if (act === 'quit') { saveGame(); break; }
   }

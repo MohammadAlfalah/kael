@@ -1182,6 +1182,19 @@
     { w: 1, kind: 'cash', amount: 8888, epicClass: true, label: 'JACKPOT €8,888' },
   ];
 
+  // -------------------------------------------------------------- contracts --
+  // Legends who hold you in high regard (favor 3+) occasionally extend a
+  // multi-day contract after a job. Rewards from legendary-tier patrons are
+  // half again as generous.
+  const CONTRACTS = [
+    { id: 'c_gigs', desc: 'Complete {n} jobs within {d} days', counter: 'gigs', goal: [4, 6], days: 3, fx: { cash: 1500, points: 150 } },
+    { id: 'c_night', desc: 'Work {n} night jobs within {d} days', counter: 'night', goal: [2, 3], days: 3, fx: { cash: 1200, points: 200 } },
+    { id: 'c_earn', desc: 'Earn €{n} within {d} days', counter: 'earned', goal: [800, 1500], days: 3, fx: { tickets: 2, points: 150 } },
+    { id: 'c_clean', desc: 'Finish {n} spotless jobs (no rating loss) within {d} days', counter: 'clean', goal: [3, 4], days: 3, fx: { cash: 1000, merit: 10 } },
+  ];
+  const CONTRACT_CHANCE = 0.35;
+  const CONTRACT_MAX_ACTIVE = 2;
+
   // --------------------------------------------------------------- dailies --
   const DAILY_POOL = [
     { id: 'd_gigs3', desc: 'Complete 3 jobs', counter: 'gigs', goal: 3, fx: { cash: 250 } },
@@ -1223,6 +1236,6 @@
   return {
     CONFIG, SLOTS, TITLES, MANDATE_TITLE, SIGNIN, SKILLS, ITEMS, BLESSINGS,
     EVENTS, LEGENDS, OCCUPATIONS, OCCUPATION_ORDER, WHEEL, DAILY_POOL,
-    MAIN_QUESTS, ACHIEVEMENTS,
+    MAIN_QUESTS, ACHIEVEMENTS, CONTRACTS, CONTRACT_CHANCE, CONTRACT_MAX_ACTIVE,
   };
 });

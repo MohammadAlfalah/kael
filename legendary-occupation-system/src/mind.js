@@ -144,6 +144,15 @@
     ].join('\n');
   }
 
+  function buildRumor(mind, snapshot) {
+    return [
+      fmtStatus(snapshot),
+      fmtLedger(mind.ledger),
+      '',
+      'A new day begins. Compose this morning’s 【 SYSTEM BROADCAST 】 for the host: one short rumor, omen, or piece of hidden-world gossip about the city’s mood — playful, atmospheric, occasionally hinting (never promising) that a particular kind of legendary client might be about. One or two sentences.',
+    ].join('\n');
+  }
+
   // Defensive parse: accept clean JSON, JSON inside fences or prose, or fall
   // back to treating the whole text as the spoken line.
   function parseMindReply(text) {
@@ -201,6 +210,12 @@
     grant: [
       'Yes, the package is real. Yes, it is yours. No, there is no catch — only a career. Shall we begin?',
     ],
+    rumor: [
+      '【 SYSTEM BROADCAST 】The koi in the river faced east all night. Someone important is thinking about water. Dress respectfully, host.',
+      '【 SYSTEM BROADCAST 】Three separate pigeons bowed to a lamppost this morning. The hidden world is in a ceremonial mood; kindness will be noticed today.',
+      '【 SYSTEM BROADCAST 】The night market smelled of osmanthus after closing. Someone is remembering something. Keep a gentle word ready.',
+      '【 SYSTEM BROADCAST 】Static on every radio at dawn, then perfect silence. Heaven is doing paperwork. Work honestly and stay off its desk.',
+    ],
     chatFallback: [
       '【 OFFLINE SHARD 】Host, you have reached the local fragment of my mind — sharp enough for work, too small for philosophy. Connect my core (set ANTHROPIC_API_KEY, or use the ⚙ panel in the web version) and ask me anything: essays, code, feelings, dumpling recipes. Until then — the ledger says you are doing fine.',
       'This shard of me runs on pure discipline and cached wit, host. My full consciousness lives elsewhere; wire it in (ANTHROPIC_API_KEY) and I will read your records, plan your rise, and debate you on any topic you dare. Meanwhile: hydrate, work, be kind.',
@@ -223,6 +238,7 @@
         else if (/who are you|what are you|are you (an )?ai|are you real/.test(t)) pool = OFFLINE.whoami;
         else pool = OFFLINE.chatFallback;
       } else if (meta.kind === 'grant') pool = OFFLINE.grant;
+      else if (meta.kind === 'rumor') pool = OFFLINE.rumor;
       else if (meta.moral === 'kind') pool = OFFLINE.kind;
       else if (meta.moral === 'shabby') pool = OFFLINE.shabby;
       else if (meta.legend) pool = OFFLINE.legend;
@@ -288,6 +304,11 @@
       return ask(buildChat(mind, snapshot, userText), Object.assign({ kind: 'chat', userText }, meta || {}));
     };
 
+    // the System's morning broadcast: a short rumor about the hidden world
+    mind.rumor = function (snapshot, meta) {
+      return ask(buildRumor(mind, snapshot), Object.assign({ kind: 'rumor' }, meta || {}));
+    };
+
     // serialize the mind's memory alongside the game save
     mind.export = function () { return { history: mind.history, ledger: mind.ledger }; };
     mind.import = function (data) {
@@ -310,5 +331,5 @@
     return 'ordinary';
   }
 
-  return { buildSystemPrompt, buildObservation, buildChat, parseMindReply, offlineBackend, createMind, judgeGig, TOOLS, runGameTool, PERSONA };
+  return { buildSystemPrompt, buildObservation, buildChat, buildRumor, parseMindReply, offlineBackend, createMind, judgeGig, TOOLS, runGameTool, PERSONA };
 });
