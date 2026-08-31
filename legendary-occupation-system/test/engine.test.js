@@ -464,6 +464,51 @@ test('saves from before contracts existed migrate cleanly', () => {
   assert.deepEqual(restored.contracts, []);
 });
 
+test('festivals arrive every 7th day, in rotation, with real effects', () => {
+  const s = freshGame(97, 'carHailer');
+  assert.equal(LOS.festivalToday(s), null, 'day 1 is ordinary');
+  const expectByDay = { 7: 'lantern', 14: 'wealth', 21: 'moon', 28: 'ghost', 35: 'lantern' };
+  const seen = {};
+  while (s.day < 36) {
+    LOS.endDay(s);
+    const f = LOS.festivalToday(s);
+    if (f) seen[s.day] = f.id;
+  }
+  assert.deepEqual(seen, expectByDay, 'rotation holds across five weeks');
+  // effects: park on a Lantern Night and compare stats to an ordinary day
+  const a = freshGame(97, 'carHailer');
+  const base = LOS.getStats(a).legendBonus;
+  while (a.day < 7) LOS.endDay(a);
+  assert.equal(LOS.getStats(a).legendBonus, base + 10, 'Lantern Night thins the veil');
+  assert.ok(a.log.some(l => /Lantern Night/.test(l.t)), 'arrival announced');
+  LOS.endDay(a);
+  assert.equal(LOS.getStats(a).legendBonus, base, 'back to normal the next day');
+});
+
+test('Ghost Festival opens the night one slot early', () => {
+  const s = freshGame(101, 'chef');
+  while (s.day < 28) LOS.endDay(s);
+  assert.equal(LOS.festivalToday(s).id, 'ghost');
+  s.slot = C.CONFIG.nightSlot - 1;
+  assert.equal(LOS.isNight(s), true, 'dusk counts as night today');
+  LOS.endDay(s);
+  s.slot = C.CONFIG.nightSlot - 1;
+  assert.equal(LOS.isNight(s), false, 'ordinary dusk resumes tomorrow');
+});
+
+test('Moon-Viewing Festival adds warmth to gifts', () => {
+  const s = freshGame(103, 'landlord');
+  while (s.day < 21) LOS.endDay(s);
+  assert.equal(LOS.festivalToday(s).id, 'moon');
+  s.items.redEnvelope = 1;
+  s.phase = 'gig';
+  s.gig = { clientKind: 'legend', kind: 'legend', clientId: 'yueLao', size: 2, night: false, events: [], eventIdx: 0, payPct: 0, bonusAdd: 0, ratingLost: false, texts: [] };
+  const r = LOS.useItem(s, 'redEnvelope');
+  assert.equal(r.ok, true);
+  assert.equal(s.favor.yueLao, 2, 'red envelope lands at +2 under the full moon');
+  s.phase = 'idle'; s.gig = null;
+});
+
 test('a long honest grind stays stable (100 gigs, no crashes, sane economy)', () => {
   const s = freshGame(61, 'chef');
   let guard = 0;

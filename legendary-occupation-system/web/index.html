@@ -351,6 +351,7 @@ function snapshot() {
     day: G.day, slotName: LOS.slotName(G), level: G.level, title: LOS.getTitle(G),
     cash: G.cash, points: G.points, rating: G.rating.toFixed(2),
     stamina: G.stamina, maxStamina: st.maxStamina,
+    festival: (function () { var f = LOS.festivalToday(G); return f ? f.name : null; })(),
   };
 }
 
@@ -447,7 +448,11 @@ function renderHud() {
     '<span class="stat num"><b>Merit</b>' + G.merit + '</span>' +
     '<span class="stat num"><b>' + esc(o.verbs.fameNoun) + '</b>' + G.fame.toLocaleString() + '</span>' +
     '<span class="stat"><b>Stamina</b><span class="bar"><i style="width:' + Math.round(100 * G.stamina / st.maxStamina) + '%"></i></span> <span class="num">' + G.stamina + '/' + st.maxStamina + '</span></span>' +
-    '<span class="stat"><b>EXP</b><span class="bar xp"><i style="width:' + Math.round(100 * G.exp / xpNeed) + '%"></i></span></span>';
+    '<span class="stat"><b>EXP</b><span class="bar xp"><i style="width:' + Math.round(100 * G.exp / xpNeed) + '%"></i></span></span>' +
+    (function () {
+      var fest = LOS.festivalToday(G);
+      return fest ? '<span class="chip hot" title="' + esc(fest.blurb) + '">' + fest.icon + ' ' + esc(fest.name) + '</span>' : '';
+    })();
 }
 
 function tierChip(tier) {

@@ -1195,6 +1195,18 @@
   const CONTRACT_CHANCE = 0.35;
   const CONTRACT_MAX_ACTIVE = 2;
 
+  // -------------------------------------------------------------- festivals --
+  // Every 7th day the hidden world celebrates. Festivals rotate in order and
+  // apply their fx as a passive stat source for that one day; `giftBonus`
+  // and `earlyNight` are handled at their points of use.
+  const FESTIVALS = [
+    { id: 'lantern', name: 'Lantern Night', icon: '🏮', blurb: 'Ten thousand lanterns rise, and the veil between worlds thins to silk.', fx: { legendBonus: 10, nightPayMult: 0.2 } },
+    { id: 'wealth', name: 'Day of Small Fortunes', icon: '🧧', blurb: 'Cai Shen balances his ledgers; every price in the city bows politely.', fx: { shopMult: -0.2, payMult: 0.1 } },
+    { id: 'moon', name: 'Moon-Viewing Festival', icon: '🌕', blurb: 'Every rooftop faces the sky tonight. Gifts carry double warmth.', fx: { grace: 1 }, giftBonus: 1 },
+    { id: 'ghost', name: 'Ghost Festival', icon: '👻', blurb: 'The gates stand open until dawn, and kindness echoes twice as far.', fx: { meritMult: 1 }, earlyNight: true },
+  ];
+  const FESTIVAL_EVERY = 7;
+
   // --------------------------------------------------------------- dailies --
   const DAILY_POOL = [
     { id: 'd_gigs3', desc: 'Complete 3 jobs', counter: 'gigs', goal: 3, fx: { cash: 250 } },
@@ -1237,5 +1249,6 @@
     CONFIG, SLOTS, TITLES, MANDATE_TITLE, SIGNIN, SKILLS, ITEMS, BLESSINGS,
     EVENTS, LEGENDS, OCCUPATIONS, OCCUPATION_ORDER, WHEEL, DAILY_POOL,
     MAIN_QUESTS, ACHIEVEMENTS, CONTRACTS, CONTRACT_CHANCE, CONTRACT_MAX_ACTIVE,
+    FESTIVALS, FESTIVAL_EVERY,
   };
 });

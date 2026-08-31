@@ -117,7 +117,8 @@
       ' | level ' + state.level + ' (' + state.title + ')' +
       ' | €' + state.cash + ', ' + state.points + ' pts' +
       ' | rating ' + state.rating +
-      ' | stamina ' + state.stamina + '/' + state.maxStamina;
+      ' | stamina ' + state.stamina + '/' + state.maxStamina +
+      (state.festival ? ' | today is ' + state.festival : '');
   }
 
   function buildObservation(mind, snapshot, happening) {

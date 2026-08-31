@@ -111,6 +111,8 @@
     for (const id of s.equipped) if (C.SKILLS[id]) sources.push(C.SKILLS[id].fx);
     for (const id of s.blessings) if (C.BLESSINGS[id]) sources.push(C.BLESSINGS[id].fx);
     for (const b of s.buffs) sources.push(b.fx);
+    const fest = festivalToday(s);
+    if (fest) sources.push(fest.fx);
     for (const fx of sources) {
       if (!fx) continue;
       for (const k of ['pace', 'grace', 'resonance', 'maxStamina', 'payMult', 'bonusMult', 'bonusAdd', 'luck', 'legendBonus', 'meritMult', 'shopMult', 'expMult', 'fameMult', 'nightPayMult', 'pointsMult', 'findCash']) {
@@ -136,7 +138,15 @@
     return Math.min(CFG.skillSlotMax, 1 + Math.floor(s.level / CFG.skillSlotEvery));
   }
 
-  function isNight(s) { return s.slot >= CFG.nightSlot; }
+  function festivalToday(s) {
+    if (!s.occupation || s.day % C.FESTIVAL_EVERY !== 0) return null;
+    return C.FESTIVALS[(s.day / C.FESTIVAL_EVERY - 1) % C.FESTIVALS.length];
+  }
+
+  function isNight(s) {
+    const fest = festivalToday(s);
+    return s.slot >= CFG.nightSlot - (fest && fest.earlyNight ? 1 : 0);
+  }
   function slotName(s) { return C.SLOTS[s.slot]; }
 
   // ------------------------------------------------------------ apply fx ----
@@ -582,6 +592,8 @@
     });
     genDailies(s);
     addLog(s, '🌅 Day ' + s.day + ' begins. The System hums a small good-morning jingle.', 'system');
+    const fest = festivalToday(s);
+    if (fest) addLog(s, fest.icon + ' Today is ' + fest.name + '! ' + fest.blurb, 'quest');
     checkQuestsAndAchievements(s);
     return { ok: true, day: s.day, windfalls: paid };
   }
@@ -712,7 +724,9 @@
       if (s.phase !== 'gig' || s.gig.kind !== 'legend') return { ok: false, msg: 'Gifts only land during a job with a legendary client.' };
       const gift = item.use.gift;
       if (gift.onlyTarget && s.gig.clientId !== gift.bonusTarget) return { ok: false, msg: 'This gift is meant for someone else. The System refuses to let you waste it.' };
-      const amount = (s.gig.clientId === gift.bonusTarget) ? gift.bonusFavor : gift.favor;
+      let amount = (s.gig.clientId === gift.bonusTarget) ? gift.bonusFavor : gift.favor;
+      const fest = festivalToday(s);
+      if (fest && fest.giftBonus) amount += fest.giftBonus; // festival warmth: flat bonus favor on gifts
       s.items[id] -= 1;
       s.today.itemsUsed += 1;
       bumpFavor(s, s.gig.clientId, amount);
@@ -963,7 +977,7 @@
     listAssets, buyAsset, selectAsset, upgradeAsset, upgradeCost,
     equipSkill, unequipSkill, skillSlots,
     claimDaily, dailiesView, questView, codexView, contractsView, recordsView,
-    getStats, getTitle, xpForLevel, isNight, slotName, describeFx,
+    getStats, getTitle, xpForLevel, isNight, slotName, festivalToday, describeFx,
     save, load,
     _test: { rand, randInt, chance, weighted, applyFx, grantExp, checkCondition, bumpFavor, addLog, offerContract, progressContracts, maybeOfferContract },
   };

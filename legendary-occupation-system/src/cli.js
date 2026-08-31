@@ -32,6 +32,7 @@ let mind;
 function snapshot() {
   if (!state.occupation) return null;
   const st = LOS.getStats(state);
+  const fest = LOS.festivalToday(state);
   return {
     occupation: state.occupation,
     occupationName: C.OCCUPATIONS[state.occupation].name,
@@ -39,6 +40,7 @@ function snapshot() {
     level: state.level, title: LOS.getTitle(state),
     cash: state.cash, points: state.points, rating: state.rating.toFixed(2),
     stamina: state.stamina, maxStamina: st.maxStamina,
+    festival: fest ? fest.name : null,
   };
 }
 
@@ -66,6 +68,8 @@ function header() {
       ' · ' + green('€' + state.cash) + ' · ' + mag(state.points + ' pts') + ' · 🎟️' + state.tickets +
       ' · ⭐' + state.rating.toFixed(2) + ' · ⚡' + state.stamina + '/' + st.maxStamina + ' · 🧧merit ' + state.merit);
     console.log(cyan('│ ') + dim('Residence: ' + state.residence));
+    const fest = LOS.festivalToday(state);
+    if (fest) console.log(cyan('│ ') + gold(fest.icon + ' ' + fest.name + ' — ' + fest.blurb));
   }
   console.log(cyan('└──────────────────────────────────────────────────────────────┘'));
 }

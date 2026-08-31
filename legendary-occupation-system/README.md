@@ -49,7 +49,7 @@ npm start          # terminal game
 Or open **`web/index.html`** in a browser — same engine, neon System-window UI, autosaves to localStorage.
 
 ```bash
-npm test           # 45 deterministic tests (engine, content integrity, mind, build)
+npm test           # 48 deterministic tests (engine, content integrity, mind, build)
 npm run build      # dist/artifact.html — single self-contained file, publishable as a claude.ai Artifact
 ```
 
@@ -61,6 +61,7 @@ npm run build      # dist/artifact.html — single self-contained file, publisha
 - **Progression** — levels and titles (System Rookie → Living Legend), EXP, stamina, a day/night cycle where legends walk at night, workplace tiers and part upgrades, equippable skills, daily missions, sign-in streaks, achievements.
 - **Wheel of Destiny** — gacha with a pity counter (epic-class guaranteed within 10 spins; the System is generous, not cruel).
 - **Legend Contracts** — patrons at Favor 3+ extend multi-day contracts (complete N jobs, earn €N, spotless streaks…) with rich rewards, 1.5× from legendary-tier patrons, and deeper favor on fulfillment.
+- **Festival Days** — every 7th day the hidden world celebrates: Lantern Night (legends +10%), Day of Small Fortunes (shop −20%), Moon-Viewing (gifts +1 favor), Ghost Festival (night opens early, merit ×2), in rotation.
 - **Records & broadcasts** — a lifetime-stats and achievements panel, and a 【 SYSTEM BROADCAST 】 rumor about the hidden world each morning (AI-composed in full-mind mode).
 - **Deterministic core** — one seed, one story: the engine is pure and fully replayable, which is how it's tested.
 
